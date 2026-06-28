@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>JellySeedr</RootNamespace>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Jellyfin.Controller" Version="10.9.9" >
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="Jellyfin.Model" Version="10.9.9" >
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="Seedrcc" Version="1.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="Configuration/configPage.html" />
+    <EmbeddedResource Include="Configuration/configPage.html" />
+    <None Remove="Configuration/SeedrBrowser.js" />
+    <EmbeddedResource Include="Configuration/SeedrBrowser.js" />
+  </ItemGroup>
+
+</Project>

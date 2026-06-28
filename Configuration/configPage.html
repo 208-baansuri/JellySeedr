@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>JellySeedr</title>
+</head>
+<body>
+    <div id="JellySeedrConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox">
+        <div data-role="content">
+            <div class="content-primary">
+                <div id="SeedrSection" style="margin-top: 20px;">
+                    <div class="inputContainer">
+                        <h2>Seedr</h2>
+                        <div id="seedrStatus">
+                            <span id="seedr_status_text">checking...</span>
+                            <span type="button" id="seedr_logout_btn" style="display:none;" class="mupTextLink">Logout</span>
+                            <div id="seedr_storage" style="display:none; margin-top:.25em;">Storage: <span id="seedr_storage_text"></span></div>
+                        </div>
+
+                        <div id="seedrLogin" style="display:none; margin-top: 20px;">
+                            <form id="seedrLoginForm">
+                                    <input type="text" id="seedr_username" class="emby-input" placeholder="Username" />
+                                    <input type="password" id="seedr_password" class="emby-input" placeholder="Password" style="margin-top: 20px;"/>
+                                    <button is="emby-button" type="submit" id="seedr_login_btn" class="raised button-submit block emby-button" style="width: max-content; margin-top: 20px;">
+                                        <span>Login to Seedr</span>
+                                    </button>
+                            </form>
+                        </div>
+
+                        <div id="seedrActions" style="display:none; margin-top: 20px;">
+                            <form id="seedrSubmitForm">
+                                <div id="jellyfinLibrariesSection">
+                                    <h3>Download torrents to</h3>
+                                    <div class="selectContainer">
+                                        <select id="jellyfinLibrary" class="emby-select-withcolor emby-select">
+                                            <option value="">Loading...</option>
+                                        </select>
+                                        <div class="selectArrowContainer">
+                                            <span class="material-icons keyboard_arrow_down" aria-hidden="true" style="margin-top: 0.2em;"></span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <h3 style="margin-top: 20px;">Torrent file or link</h3>
+                                <div style="display:flex; gap:.5em; align-items:center;">
+                                    <input type="text" id="seedrInput" class="emby-input" placeholder="magnet:? or https://... or leave empty and choose a .torrent file" style="flex:1;" />
+                                    <input type="file" id="seedrFile" accept=".torrent" style="display:none;" />
+                                    <button type="button" id="seedr_choose_file" class="raised button-submit block emby-button" style="width: max-content;">Choose file</button>
+                                </div>
+                                <div style="display:flex; gap:.5em; align-items:center; margin-top:.5em;">
+                                    <button is="emby-button" type="submit" id="seedr_submit_btn" class="raised button-submit block emby-button">Start Seedr download</button>
+                                    <button is="emby-button" type="button" id="seedr_browse_files_btn" class="raised button-submit block emby-button">Browse Seedr files</button>
+                                </div>
+                                <p id="seedr_message" style="color:green;"></p>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <script type="text/javascript">
+            var JellySeedrConfig = {
+                pluginUniqueId: '50be6aa0-120a-48e1-9bf1-e95a867587e0'
+            };
+
+            let libraryOptions;
+
+            async function fetchWithAuth(url, method, body) {
+                const reqInit = {
+                    method: method,
+                    headers: {
+                        Authorization: "MediaBrowser Token=" + ApiClient.accessToken(),
+                    },
+                    body: body,
+                };
+
+                return await fetch(url, reqInit);
+            }
+
+            document.querySelector('#JellySeedrConfigPage').addEventListener('pageshow', updateSeedrUI);
+
+            async function updateSeedrUI() {
+                try {
+                    Dashboard.showLoadingMsg('Updating ...');
+                    const res = await fetchWithAuth('/jellyseedr/status', 'GET');
+                    if (!res.ok) {
+                        throw new Error((await res.json()).message);
+                    }
+                    const status = await res.json();
+                    const loggedIn = status.loggedIn;
+                    document.getElementById('seedr_status_text').textContent = loggedIn ? 'Logged in as ' + (status.username || '') : 'Login using Seeder Username and Password';
+                    if (loggedIn) {
+                        document.getElementById('seedrLogin').style.display = 'none';
+                        document.getElementById('seedrActions').style.display = '';
+                        // Show logout button when logged in
+                        const logoutBtn = document.getElementById('seedr_logout_btn');
+                        if (logoutBtn) logoutBtn.style.display = '';
+                        if (status.storage) {
+                            const usedBytes = Number(status.storage.usedBytes || 0);
+                            const totalBytes = Number(status.storage.totalBytes || 0);
+                            const toGB = (b) => b / (1024 * 1024 * 1024);
+                            const usedGB = toGB(usedBytes);
+                            const totalGB = toGB(totalBytes);
+                            document.getElementById('seedr_storage_text').textContent = usedGB.toFixed(1) + ' GB / ' + totalGB.toFixed(1) + ' GB';
+                            document.getElementById('seedr_storage').style.display = '';
+                        }
+                    }
+                    else {
+                        document.getElementById('seedrLogin').style.display = '';
+                        document.getElementById('seedrActions').style.display = 'none';
+                        document.getElementById('seedr_storage').style.display = 'none';
+                        // Hide logout when not logged in
+                        const logoutBtn = document.getElementById('seedr_logout_btn');
+                        if (logoutBtn) logoutBtn.style.display = 'none';
+                    }
+                }
+                catch (e) {
+                    console.warn('Seedr status failed', e);
+                    document.getElementById('seedr_status_text').textContent = 'Login using Seeder Username and Password';
+                    document.getElementById('seedrLogin').style.display = '';
+                    document.getElementById('seedrActions').style.display = 'none';
+                    document.getElementById('seedr_storage').style.display = 'none';
+                }
+                finally {
+                    Dashboard.hideLoadingMsg();
+                }
+            }
+
+            function mapLibraryDetails(libraries) {
+                if (!libraries || libraries.length === 0) return new Map();
+                const result = new Map();
+                libraries.forEach(lib => {
+                    lib.Locations.forEach((loc, idx) => {
+                        const key = lib.ItemId + '|' + idx; // in case multiple locations, use index to differentiate
+                        result.set(key, {
+                            name: lib.Name + ' - ' + loc,
+                            storagePath: loc
+                        });
+                    });
+                });
+                return result;
+            }
+
+            async function loadJellyfinLibraries() {
+                try {
+                    const res = await fetchWithAuth('/jellyseedr/libraries', 'GET');
+                    if (!res.ok) {
+                        throw new Error('Unable to load libraries');
+                    }
+
+                    const libraries = await res.json();
+                    const select = document.getElementById('jellyfinLibrary');
+
+                    if (!libraries || libraries.length === 0) {
+                        // leave select with only placeholder
+                        select.innerHTML = '<option value="0">No libraries found</option>';
+                        return;
+                    }
+
+                    libraryOptions = mapLibraryDetails(libraries);
+                    let pluginConfig = await ApiClient.getPluginConfiguration(JellySeedrConfig.pluginUniqueId);
+                    const selectedLib = pluginConfig.selectedLibrary || '';
+
+                    select.innerHTML = ''; // clear any existing options
+                    libraryOptions.forEach((lib, key) => {
+                        const option = document.createElement('option');
+                        option.value = key;
+                        option.textContent = lib.name;
+                        if (key === selectedLib) {
+                            option.selected = true;
+                        }
+                        select.appendChild(option);
+                    });
+                }
+                catch (e) {
+                    console.warn('Failed to load Jellyfin libraries', e);
+                    const section = document.getElementById('jellyfinLibrariesSection');
+                    const status = document.getElementById('jellyfinLibrariesStatus');
+                    section.style.display = '';
+                    status.textContent = 'Unable to load Jellyfin libraries.';
+                }
+            }
+
+            async function saveSelectedLibrary(libKey) {
+                if (!libraryOptions || !libraryOptions.get(libKey)) {
+                    alert('Invalid library selected');
+                    return;
+                }
+                const pluginConfig = { selectedLibrary: libKey };
+                await ApiClient.updatePluginConfiguration(JellySeedrConfig.pluginUniqueId, pluginConfig);
+            }
+
+            document.getElementById('jellyfinLibrary').addEventListener('change', function (e) {
+                const libKey = e.target.value;
+                saveSelectedLibrary(libKey);
+            });
+
+            async function seedrLogin() {
+                try{
+                    Dashboard.showLoadingMsg('Logging in...');
+                    const username = document.getElementById('seedr_username').value.trim();
+                    const password = document.getElementById('seedr_password').value;
+                    const form = new FormData();
+                    form.set('username', username);
+                    form.set('password', password);
+                    const res = await fetchWithAuth('/jellyseedr/login', 'POST', form);
+                    if (res.ok) {
+                        document.getElementById('seedr_username').value = '';
+                        document.getElementById('seedr_password').value = '';
+                        Dashboard.hideLoadingMsg();
+                        await updateSeedrUI();
+                    }
+                    else {
+                        const js = await res.json();
+                        alert(js.message || 'Login failed');
+                        Dashboard.hideLoadingMsg();
+                    }
+                }
+                catch (e) {
+                    console.warn('Seedr login failed', e);
+                    alert('Login failed: ' + e.message);
+                    Dashboard.hideLoadingMsg();
+                }
+            }
+
+            document.getElementById('seedrLoginForm').addEventListener('submit', async function (e) {
+                e.preventDefault();
+                await seedrLogin();
+            });
+
+            document.getElementById('seedr_choose_file').addEventListener('click', function () {
+                document.getElementById('seedrFile').click();
+            });
+
+            document.getElementById('seedrFile').addEventListener('change', function (e) {
+                const f = e.target.files[0];
+                if (f) {
+                    document.getElementById('seedrInput').value = f.name;
+                }
+            });
+
+            document.getElementById('seedrSubmitForm').addEventListener('submit', async function (e) {
+                e.preventDefault();
+                const fileInput = document.getElementById('seedrFile');
+                const text = document.getElementById('seedrInput').value.trim();
+                const form = new FormData();
+                if (fileInput.files && fileInput.files.length > 0) {
+                    form.append('torrentFile', fileInput.files[0]);
+                }
+                else {
+                    form.set('input', text);
+                }
+
+                const res = await fetchWithAuth('/jellyseedr/submit', 'POST', form);
+                if (res.ok) {
+                    const js = await res.json();
+                    document.getElementById('seedr_message').textContent = js.message || 'Submitted';
+                    // clear file after submit
+                    document.getElementById('seedrFile').value = '';
+                    return;
+                }
+                else {
+                    const js = await res.json();
+                    alert(js.message || 'Submit failed');
+                }
+            });
+
+            document.getElementById('seedr_logout_btn').addEventListener('click', async function (e) {
+                e.preventDefault();
+                const res = await fetchWithAuth('/jellyseedr/logout', 'POST', null);
+                if (res.ok) {
+                    await updateSeedrUI();
+                }
+                else {
+                    const js = await res.json();
+                    alert(js.message || 'Logout failed');
+                }
+            });
+
+            document.querySelector('#JellySeedrConfigPage').addEventListener('pageshow', loadJellyfinLibraries);
+            
+        </script>
+        <script type="text/javascript" src="/jellyseedr/seedr-browser.js"></script>
+        <style>
+            .mupTextLink {
+                color: #5AAEFF;
+                cursor: pointer;
+            }
+
+            .mupTextLink:hover {
+                text-decoration: underline;
+            }
+	    </style>
+    </div>
+</body>
+</html>
