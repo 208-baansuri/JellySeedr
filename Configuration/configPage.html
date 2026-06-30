@@ -1,11 +1,14 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="utf-8">
     <title>JellySeedr</title>
 </head>
+
 <body>
-    <div id="JellySeedrConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox">
+    <div id="JellySeedrConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+        data-require="emby-input,emby-button,emby-select,emby-checkbox">
         <div data-role="content">
             <div class="content-primary">
                 <div id="SeedrSection" style="margin-top: 20px;">
@@ -13,17 +16,22 @@
                         <h2>Seedr</h2>
                         <div id="seedrStatus">
                             <span id="seedr_status_text">checking...</span>
-                            <span type="button" id="seedr_logout_btn" style="display:none;" class="mupTextLink">Logout</span>
-                            <div id="seedr_storage" style="display:none; margin-top:.25em;">Storage: <span id="seedr_storage_text"></span></div>
+                            <span type="button" id="seedr_logout_btn" style="display:none;"
+                                class="mupTextLink">Logout</span>
+                            <div id="seedr_storage" style="display:none; margin-top:.25em;">Storage: <span
+                                    id="seedr_storage_text"></span></div>
                         </div>
 
                         <div id="seedrLogin" style="display:none; margin-top: 20px;">
                             <form id="seedrLoginForm">
-                                    <input type="text" id="seedr_username" class="emby-input" placeholder="Username" />
-                                    <input type="password" id="seedr_password" class="emby-input" placeholder="Password" style="margin-top: 20px;"/>
-                                    <button is="emby-button" type="submit" id="seedr_login_btn" class="raised button-submit block emby-button" style="width: max-content; margin-top: 20px;">
-                                        <span>Login to Seedr</span>
-                                    </button>
+                                <input type="text" id="seedr_username" class="emby-input" placeholder="Username" />
+                                <input type="password" id="seedr_password" class="emby-input" placeholder="Password"
+                                    style="margin-top: 20px;" />
+                                <button is="emby-button" type="submit" id="seedr_login_btn"
+                                    class="raised button-submit block emby-button"
+                                    style="width: max-content; margin-top: 20px;">
+                                    <span>Login to Seedr</span>
+                                </button>
                             </form>
                         </div>
 
@@ -36,19 +44,26 @@
                                             <option value="">Loading...</option>
                                         </select>
                                         <div class="selectArrowContainer">
-                                            <span class="material-icons keyboard_arrow_down" aria-hidden="true" style="margin-top: 0.2em;"></span>
+                                            <span class="material-icons keyboard_arrow_down" aria-hidden="true"
+                                                style="margin-top: 0.2em;"></span>
                                         </div>
                                     </div>
                                 </div>
                                 <h3 style="margin-top: 20px;">Torrent file or link</h3>
                                 <div style="display:flex; gap:.5em; align-items:center;">
-                                    <input type="text" id="seedrInput" class="emby-input" placeholder="magnet:? or https://... or leave empty and choose a .torrent file" style="flex:1;" />
+                                    <input type="text" id="seedrInput" class="emby-input"
+                                        placeholder="magnet:? or https://... or leave empty and choose a .torrent file"
+                                        style="flex:1;" />
                                     <input type="file" id="seedrFile" accept=".torrent" style="display:none;" />
-                                    <button type="button" id="seedr_choose_file" class="raised button-submit block emby-button" style="width: max-content;">Choose file</button>
+                                    <button type="button" id="seedr_choose_file"
+                                        class="raised button-submit block emby-button"
+                                        style="width: max-content;">Choose file</button>
                                 </div>
                                 <div style="display:flex; gap:.5em; align-items:center; margin-top:.5em;">
-                                    <button is="emby-button" type="submit" id="seedr_submit_btn" class="raised button-submit block emby-button">Start Seedr download</button>
-                                    <button is="emby-button" type="button" id="seedr_browse_files_btn" class="raised button-submit block emby-button">Browse Seedr files</button>
+                                    <button is="emby-button" type="submit" id="seedr_submit_btn"
+                                        class="raised button-submit block emby-button">Start Seedr download</button>
+                                    <button is="emby-button" type="button" id="seedr_browse_files_btn"
+                                        class="raised button-submit block emby-button">Browse Seedr files</button>
                                 </div>
                                 <p id="seedr_message" style="color:green;"></p>
                             </form>
@@ -140,6 +155,11 @@
                 return result;
             }
 
+            function getSelectedLibraryPath() {
+                const select = document.getElementById('jellyfinLibrary');
+                return libraryOptions?.get(select.value).storagePath || ''
+            }
+
             async function loadJellyfinLibraries() {
                 try {
                     const res = await fetchWithAuth('/jellyseedr/libraries', 'GET');
@@ -157,8 +177,8 @@
                     }
 
                     libraryOptions = mapLibraryDetails(libraries);
-                    let pluginConfig = await ApiClient.getPluginConfiguration(JellySeedrConfig.pluginUniqueId);
-                    const selectedLib = pluginConfig.selectedLibrary || '';
+                    const pluginConfig = await ApiClient.getPluginConfiguration(JellySeedrConfig.pluginUniqueId);
+                    const selectedLib = pluginConfig.SelectedLibrary || '';
 
                     select.innerHTML = ''; // clear any existing options
                     libraryOptions.forEach((lib, key) => {
@@ -185,7 +205,8 @@
                     alert('Invalid library selected');
                     return;
                 }
-                const pluginConfig = { selectedLibrary: libKey };
+                const pluginConfig = await ApiClient.getPluginConfiguration(JellySeedrConfig.pluginUniqueId);
+                pluginConfig.SelectedLibrary = libKey;
                 await ApiClient.updatePluginConfiguration(JellySeedrConfig.pluginUniqueId, pluginConfig);
             }
 
@@ -195,7 +216,7 @@
             });
 
             async function seedrLogin() {
-                try{
+                try {
                     Dashboard.showLoadingMsg('Logging in...');
                     const username = document.getElementById('seedr_username').value.trim();
                     const password = document.getElementById('seedr_password').value;
@@ -249,6 +270,7 @@
                 else {
                     form.set('input', text);
                 }
+                form.set('destinationPath', getSelectedLibraryPath());
 
                 const res = await fetchWithAuth('/jellyseedr/submit', 'POST', form);
                 if (res.ok) {
@@ -277,7 +299,7 @@
             });
 
             document.querySelector('#JellySeedrConfigPage').addEventListener('pageshow', loadJellyfinLibraries);
-            
+
         </script>
         <script type="text/javascript" src="/jellyseedr/seedr-browser.js"></script>
         <style>
@@ -289,7 +311,8 @@
             .mupTextLink:hover {
                 text-decoration: underline;
             }
-	    </style>
+        </style>
     </div>
 </body>
+
 </html>

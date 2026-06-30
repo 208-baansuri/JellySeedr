@@ -13,80 +13,15 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.Mvc;
 using Seedrcc;
+using MediaBrowser.Model.System;
+using System.Threading;
 
 namespace JellySeedr.Api;
 
 
 public class SeedrManager
 {
-    public ILogger? Logger;
-
-    // [HttpPost]
-    // [Route("fetch")]
-    // public async Task<IActionResult> FetchSelection([FromBody] SeedrSelectionRequest request)
-    // {
-    //     var client = await GetSeedrClientAsync();
-    //     if (client == null)
-    //     {
-    //         return Unauthorized(new { message = "Not logged in to Seedr" });
-    //     }
-
-    //     try
-    //     {
-    //         var items = NormalizeSelection(request);
-    //         var seenFileIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-    //         var results = new List<SeedrFetchResultDto>();
-
-    //         foreach (var item in items)
-    //         {
-    //             if (IsFolder(item.Kind))
-    //             {
-    //                 var files = await CollectFilesAsync(client, item.Id, seenFileIds);
-    //                 foreach (var file in files)
-    //                 {
-    //                     var fileId = file.Id;
-    //                     if (string.IsNullOrWhiteSpace(fileId) || !seenFileIds.Add(fileId))
-    //                     {
-    //                         continue;
-    //                     }
-
-    //                     var fetched = await client.FetchFileAsync(fileId);
-    //                     results.Add(new SeedrFetchResultDto
-    //                     {
-    //                         Id = fileId,
-    //                         Name = string.IsNullOrWhiteSpace(file.Name) ? fetched.Name ?? string.Empty : file.Name,
-    //                         Url = fetched.Url ?? string.Empty,
-    //                         Size = file.Size
-    //                     });
-    //                 }
-
-    //                 continue;
-    //             }
-
-    //             if (seenFileIds.Add(item.Id))
-    //             {
-    //                 var fetched = await client.FetchFileAsync(item.Id);
-    //                 results.Add(new SeedrFetchResultDto
-    //                 {
-    //                     Id = item.Id,
-    //                     Name = string.IsNullOrWhiteSpace(item.Name) ? fetched.Name ?? string.Empty : item.Name,
-    //                     Url = fetched.Url ?? string.Empty,
-    //                     Size = item.Size
-    //                 });
-    //             }
-    //         }
-
-    //         return Ok(new
-    //         {
-    //             message = results.Count == 1 ? "Fetched 1 file." : $"Fetched {results.Count} files.",
-    //             files = results
-    //         });
-    //     }
-    //     catch (Exception ex)
-    //     {
-    //         return BadRequest(new { message = ex.Message });
-    //     }
-    // }
+    public ILogger? _logger;
 
     private Dictionary<uint, JellySeedrTask> ActiveTasks = new Dictionary<uint, JellySeedrTask>();
     private uint TaskIdCounter = 0;
@@ -126,9 +61,8 @@ public class SeedrManager
     }
 
 
-    public async Task<(int code, string message)> FetchFiles(SeedrClient client, SeedrSelectionRequest request)
+    public async Task<(int code, string message)> FetchFiles(SeedrClient client, SeedrSelectionRequest request, List<Task>? tasksCollection = null, List<uint>? jellySeedrTaskCollection = null)
     {
-        Logger?.LogInformation("Starting FetchFiles operation." + $" DestinationPath: {request.DestinationPath}, Items count: {request.Items.Count}");
         try
         {
             var items = NormalizeSelection(request);
@@ -151,19 +85,11 @@ public class SeedrManager
                     };
 
 
-                    var task = new JellySeedrTask
-                    {
-                        Id = TaskIdCounter++,
-                        Type = JellySeedrTaskType.Fetch,
-                        Status = JellySeedrTaskStatus.Pending,
-                        CreatedAt = DateTime.UtcNow,
-                        UpdatedAt = DateTime.UtcNow,
-                        FetchTask = fileFetchTask
-                    };
-
-                    ActiveTasks[task.Id] = task;
-
-                    _ = FetchFileAsync(task,fileFetchTask);
+                    var newTask = CreateNewJellySeedrTask(JellySeedrTaskType.Fetch, fileFetchTask);
+                    ActiveTasks[newTask.Id] = newTask;
+                    jellySeedrTaskCollection?.Add(newTask.Id);
+                    var createdTask = FetchFileAsync(newTask, fileFetchTask);
+                    tasksCollection?.Add(createdTask);
 
                     fetchedFiles++;
                 }
@@ -174,17 +100,17 @@ public class SeedrManager
         }
         catch (Exception ex)
         {
-            Logger?.LogError(ex, "Error in FetchFiles operation.");
+            _logger?.LogError(ex, "Error in FetchFiles operation.");
             return (400, ex.Message);
         }
     }
 
     private async Task FetchFileAsync(JellySeedrTask task, JellySeedrFetchTask fetchTask, FetchNameClashResolution clashResolution = FetchNameClashResolution.Rename)
     {
-        Logger?.LogInformation($"Starting FetchFileAsync for task {task.Id} with source URL: {fetchTask.SourceUrl} and destination path: {fetchTask.DestinationPath}");
         // Handle the fetched file URL as needed
         if (string.IsNullOrWhiteSpace(fetchTask.SourceUrl))
         {
+            _logger?.LogWarning("FetchFileAsync task {TaskId} failed due to empty/null source URL.", task.Id);
             task.Status = JellySeedrTaskStatus.Failed;
             task.ErrorMessage = "Invalid source URL.";
             task.UpdatedAt = DateTime.UtcNow;
@@ -203,9 +129,8 @@ public class SeedrManager
                         return;
                     case FetchNameClashResolution.Rename:
                         var directory = Path.GetDirectoryName(fetchTask.DestinationPath) ?? string.Empty;
-                        var firstDotIndex = fetchTask.SourceFileName.IndexOf('.');
-                        var filenameWithoutExt = firstDotIndex != -1 ? fetchTask.SourceFileName.Substring(0, firstDotIndex) : fetchTask.SourceFileName;
-                        var extension = firstDotIndex != -1 ? fetchTask.SourceFileName.Substring(firstDotIndex) : string.Empty;
+                        var filenameWithoutExt = Path.GetFileNameWithoutExtension(fetchTask.SourceFileName);
+                        var extension = Path.GetExtension(fetchTask.SourceFileName);
                         uint counter = 1;
                         var newDestinationPath = Path.Combine(directory, $"{filenameWithoutExt}-({counter}){extension}");
                         while (System.IO.File.Exists(newDestinationPath))
@@ -224,7 +149,7 @@ public class SeedrManager
         }
         catch (Exception ex)
         {
-            Logger?.LogError(ex, $"Error checking destination file for task {task.Id}: {ex.Message}");
+            _logger?.LogError(ex, "Error checking destination file for task {TaskId}: {Message}", task.Id, ex.Message);
             task.Status = JellySeedrTaskStatus.Failed;
             task.ErrorMessage = $"Error checking destination file: {ex.Message}";
             task.UpdatedAt = DateTime.UtcNow;
@@ -261,7 +186,7 @@ public class SeedrManager
         }
         catch (Exception ex)
         {
-            Logger?.LogError(ex, $"Error downloading file for task {task.Id}: {ex.Message}");
+            _logger?.LogError(ex, "Error downloading file for task {TaskId}: {Message}", task.Id, ex.Message);
             task.Status = JellySeedrTaskStatus.Failed;
             task.ErrorMessage = $"Error downloading file: {ex.Message}";
             task.UpdatedAt = DateTime.UtcNow;
@@ -315,6 +240,285 @@ public class SeedrManager
         }
 
         return folderObject;
+    }
+
+    public async Task<(int code, string message)> HandleTorrentTask(SeedrClient client, SeedrTorrentAddParam param)
+    {
+        try
+        {
+            AddTorrentResult? result = null;
+            switch (param.InputType)
+            {
+                case SeedrInputType.TorrentFile:
+                    {
+                        result = await client.AddTorrentAsync(torrentFile: param.Source);
+                        break;
+                    }
+                case SeedrInputType.MagnetLink:
+                    {
+                        result = await client.AddTorrentAsync(magnetLink: param.Source);
+                        break;
+                    }
+                case SeedrInputType.TorrentUrl:
+                    {
+                        result = await client.AddTorrentAsync(magnetLink: param.Source);
+                        break;
+                    }
+            }
+
+            if (result == null || !result.Result)
+            {
+                _logger?.LogWarning("Failed to add torrent to Seedr. Source: '{Source}', InputType: {InputType}", param.Source, param.InputType);
+                return (500, "Error adding torrent: Make sure url/magnet is valid and you have enough storage space. Also for free account only one concurrent torrent download is allowed.");
+            }
+
+            var torrentTask = new JellySeedrTorrentTask
+            {
+                TorrentId = result.UserTorrentId ?? 0,
+                TorrentName = result.Title ?? string.Empty,
+                TotalSize = -1,
+                Progress = 0,
+            };
+
+            var newTask = CreateNewJellySeedrTask(JellySeedrTaskType.Torrent, torrentTask);
+            newTask.Status = JellySeedrTaskStatus.InProgress;
+            ActiveTasks[newTask.Id] = newTask;
+
+            _ = HandleTorrentCompletion(client, newTask, param);
+
+            return (200, $"Torrent added to Seedr: '{result.Title}'.");
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Error in HandleTorrentTask for source '{Source}'", param.Source);
+            return (500, $"Error adding torrent: {ex.Message}");
+        }
+    }
+
+
+    private async Task HandleTorrentCompletion(SeedrClient client, JellySeedrTask task, SeedrTorrentAddParam param)
+    {
+        var torrentTask = task.TorrentTask;
+        if (torrentTask == null)
+        {
+            _logger?.LogWarning("HandleTorrentCompletion failed: Torrent task data is null for Task {TaskId}.", task.Id);
+            task.Status = JellySeedrTaskStatus.Failed;
+            task.ErrorMessage = "Torrent task is null.";
+            return;
+        }
+
+        try
+        {
+            Folder? seedrFolder = null;
+            while (task.Status == JellySeedrTaskStatus.InProgress)
+            {
+                var seedrContent = await client.ListContentsAsync();
+                var seedrTorrentTask = seedrContent.Torrents.FirstOrDefault(x => x.Id == torrentTask.TorrentId);
+                if (seedrTorrentTask == null)
+                {
+                    seedrFolder = seedrContent.Folders.FirstOrDefault(x => x.Name == torrentTask.TorrentName);
+                    if (seedrFolder == null)
+                    {
+                        _logger?.LogWarning("Torrent task {TaskId} (TorrentId: {TorrentId}) is no longer in Seedr list and no completed folder with name '{TorrentName}' was found. Task cancelled.",
+                            task.Id, torrentTask.TorrentId, torrentTask.TorrentName);
+                        task.Status = JellySeedrTaskStatus.Cancelled;
+                        task.ErrorMessage = "Torrent cancelled, it is not found in seedr.";
+                        return;
+                    }
+                    else
+                    {
+                        task.Status = JellySeedrTaskStatus.Completed;
+                        break;
+                    }
+                }
+
+                if (torrentTask.TotalSize == -1)
+                {
+                    torrentTask.TotalSize = seedrTorrentTask.Size;
+                }
+
+
+                torrentTask.Progress = seedrTorrentTask.Progress;
+                task.UpdatedAt = DateTime.Now;
+
+                await Task.Delay(500);
+            }
+
+            if (seedrFolder != null)
+            {
+                await ScanAndFetchMatchingFilesAsync(client, seedrFolder, param);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Error occurred during HandleTorrentCompletion for task {TaskId}: {Message}", task.Id, ex.Message);
+            task.Status = JellySeedrTaskStatus.Failed;
+            task.ErrorMessage = $"Error during monitoring: {ex.Message}";
+        }
+    }
+
+    private async Task ScanAndFetchMatchingFilesAsync(SeedrClient client, Folder seedrFolder, SeedrTorrentAddParam param)
+    {
+        var selectionRequest = new SeedrSelectionRequest
+        {
+            DestinationPath = param.DestinationPath
+        };
+
+        var stack = new Stack<string>();
+        stack.Push(seedrFolder.Id.ToString());
+
+        while (stack.Count > 0)
+        {
+            var currentFolderId = stack.Pop();
+            var listing = await client.ListContentsAsync(currentFolderId);
+
+            if (listing != null)
+            {
+                if (listing.Files != null)
+                {
+                    foreach (var file in listing.Files)
+                    {
+                        var fileName = file.Name ?? string.Empty;
+                        var extensionWithPeriod = Path.GetExtension(fileName);
+                        var extension = extensionWithPeriod.Length > 1 ? extensionWithPeriod.Substring(1) : string.Empty;
+
+                        if (param.DownloadExtensions.Contains(extension))
+                        {
+                            var fileSeedrPath = listing.Fullname + "/" + fileName;
+
+                            selectionRequest.Items.Add(new SeedrSelectionItem
+                            {
+                                Id = file.FolderFileId.ToString() ?? string.Empty,
+                                Kind = "file",
+                                Name = fileName,
+                                Size = file.Size,
+                                Path = fileSeedrPath
+                            });
+                        }
+                    }
+                }
+
+                if (listing.Folders != null)
+                {
+                    foreach (var childFolder in listing.Folders)
+                    {
+                        stack.Push(childFolder.Id.ToString());
+                    }
+                }
+            }
+        }
+
+        List<uint> jellySeedrTaskIds = [];
+        if (selectionRequest.Items.Count > 0)
+        {
+            List<Task> fetchTasks = [];
+            await FetchFiles(client, selectionRequest, fetchTasks, jellySeedrTaskIds);
+            await Task.WhenAll(fetchTasks);
+        }
+        else
+        {
+            _logger?.LogWarning("No files matching the allowed download extensions were found in folder '{FolderName}'.", seedrFolder.Name);
+        }
+
+        var allCompleted = jellySeedrTaskIds.All(id => ActiveTasks[id].Status == JellySeedrTaskStatus.Completed);
+
+        if (allCompleted)
+        {
+            var jellySeedrDeleteTask = new JellySeedrDeleteTask
+            {
+                Id = seedrFolder.Id.ToString(),
+                Path = seedrFolder.Fullname,
+                Kind = "folder"
+            };
+
+            var newTask = CreateNewJellySeedrTask(JellySeedrTaskType.Delete, jellySeedrDeleteTask);
+            newTask.Status = JellySeedrTaskStatus.Pending;
+            ActiveTasks[newTask.Id] = newTask;
+
+            await HandleDeleteTask(client, newTask);
+        }
+    }
+
+
+    public async Task<(int code, string message)> HandleDeleteTask(SeedrClient client, JellySeedrTask deleteTask)
+    {
+        if (deleteTask.Type != JellySeedrTaskType.Delete)
+        {
+            _logger?.LogWarning("HandleDeleteTask aborted. Invalid task type: {Type}", deleteTask.Type);
+            return (400, "Invalid task type");
+        }
+
+        var task = deleteTask.DeleteTask;
+
+        if (deleteTask.Status != JellySeedrTaskStatus.Pending)
+        {
+            _logger?.LogWarning("HandleDeleteTask aborted. Task {TaskId} is not Pending (Status: {Status}).", deleteTask.Id, deleteTask.Status);
+            return (400, "Invalid task status");
+        }
+
+        if (task == null || string.IsNullOrEmpty(task.Id))
+        {
+            _logger?.LogWarning("HandleDeleteTask aborted. Task {TaskId} contains invalid delete task payload.", deleteTask.Id);
+            return (400, "Invalid task");
+        }
+
+        try
+        {
+            deleteTask.Status = JellySeedrTaskStatus.InProgress;
+            APIResult res;
+            if (IsFolder(task.Kind))
+            {
+                res = await client.DeleteFolderAsync(task.Id);
+            }
+            else
+            {
+                res = await client.DeleteFileAsync(task.Id);
+            }
+
+            if (!res.Result)
+            {
+                _logger?.LogWarning("Seedr delete request failed with code {Code}.", res.Code);
+                return (400, res.Code?.ToString() ?? "Error deleting task");
+            }
+
+            deleteTask.Status = JellySeedrTaskStatus.Completed;
+            return (200, "Task completed successfully");
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Error deleting task {TaskId} in Seedr: {Message}", deleteTask.Id, ex.Message);
+            return (500, $"Error deleting task: {ex.Message}");
+        }
+    }
+
+    private JellySeedrTask CreateNewJellySeedrTask(JellySeedrTaskType type, object taskData)
+    {
+        var id = Interlocked.Increment(ref TaskIdCounter);
+
+        var now = DateTime.Now;
+        var task = new JellySeedrTask
+        {
+            Id = id,
+            Type = type,
+            Status = JellySeedrTaskStatus.Pending,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+
+        switch (type)
+        {
+            case JellySeedrTaskType.Torrent:
+                task.TorrentTask = (JellySeedrTorrentTask)taskData;
+                break;
+            case JellySeedrTaskType.Fetch:
+                task.FetchTask = (JellySeedrFetchTask)taskData;
+                break;
+            case JellySeedrTaskType.Delete:
+                task.DeleteTask = (JellySeedrDeleteTask)taskData;
+                break;
+        }
+
+        return task;
     }
 
 }
@@ -387,14 +591,15 @@ public enum JellySeedrTaskStatus
     Pending,
     InProgress,
     Completed,
-    Failed, 
-    WaitingForDependencies
+    Failed,
+    Cancelled
 }
 
 public enum JellySeedrTaskType
 {
     Torrent,
-    Fetch
+    Fetch,
+    Delete
 }
 
 public sealed class JellySeedrFetchTask
@@ -414,9 +619,10 @@ public sealed class JellySeedrFetchTask
     public long BytesCopied { get; set; }
 }
 
+
 public sealed class JellySeedrTorrentTask
 {
-    public string TorrentId { get; set; } = string.Empty;
+    public int TorrentId { get; set; }
 
     public string TorrentName { get; set; } = string.Empty;
 
@@ -425,6 +631,13 @@ public sealed class JellySeedrTorrentTask
     public double Progress { get; set; }
 }
 
+public sealed class JellySeedrDeleteTask
+{
+    public string Id { get; set; } = string.Empty;
+    public string Path { get; set; } = string.Empty;
+
+    public string Kind { get; set; } = string.Empty;
+}
 
 public sealed class JellySeedrTask
 {
@@ -440,10 +653,9 @@ public sealed class JellySeedrTask
 
     public JellySeedrFetchTask? FetchTask { get; set; }
 
-    public JellySeedrTorrentTask? TorrentTask{ get; set; }
+    public JellySeedrTorrentTask? TorrentTask { get; set; }
 
-    public List<uint> DependentTaskIds { get; set; } = [];
-
+    public JellySeedrDeleteTask? DeleteTask { get; set; }
 
     public string? ErrorMessage { get; set; }
 }
@@ -453,5 +665,22 @@ public enum FetchNameClashResolution
     Overwrite,
     Skip,
     Rename
+}
+
+
+public enum SeedrInputType { Unknown, TorrentFile, TorrentUrl, MagnetLink }
+
+public sealed class SeedrTorrentAddParam
+{
+    public SeedrInputType InputType { get; set; }
+
+    public string Source { get; set; } = string.Empty;
+
+    public HashSet<string> DownloadExtensions { get; set; } = [];
+
+    public string DestinationPath { get; set; } = string.Empty;
+
+    public bool DeleteAfterDownload { get; set; } = false;
+
 }
 

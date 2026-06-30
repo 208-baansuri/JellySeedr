@@ -13,6 +13,7 @@ using MediaBrowser.Model.Entities;
 using JellySeedr.Configuration;
 using Seedrcc;
 using Microsoft.Extensions.Logging;
+using System.Linq;
 
 namespace JellySeedr.Api;
 
@@ -39,9 +40,9 @@ public class JellySeedrController : ControllerBase
         _libraryManager = libraryManager;
         _logger = logger;
         config = Plugin.Instance!.Configuration;
-        if (seedrManager.Logger == null)
+        if (seedrManager._logger == null)
         {
-            seedrManager.Logger = _logger;
+            seedrManager._logger = _logger;
         }
     }
 
@@ -57,7 +58,8 @@ public class JellySeedrController : ControllerBase
     [Route("status")]
     public async Task<IActionResult> GetSeedrStatus()
     {
-        if (seedrccClient != null) {
+        if (seedrccClient != null)
+        {
             return await getSeedrUserInfoAsync(seedrccClient);
         }
         var tokenAvailable = config != null && !string.IsNullOrEmpty(config.SeedrToken);
@@ -66,7 +68,8 @@ public class JellySeedrController : ControllerBase
             Token seedrToken = Token.FromBase64(config!.SeedrToken!);
             var client = new SeedrClient(seedrToken, onRefreshSeedrToken, _httpClientFactory.CreateClient());
             var result = await getSeedrUserInfoAsync(client);
-            if (!(result is OkObjectResult)) {
+            if (!(result is OkObjectResult))
+            {
                 // If we can't get user info, the token is probably invalid. Clear it from config.
                 config!.SeedrToken = null;
                 Plugin.Instance!.SaveConfiguration();
@@ -88,7 +91,8 @@ public class JellySeedrController : ControllerBase
 
     private async Task<IActionResult> getSeedrUserInfoAsync(SeedrClient client)
     {
-        try {
+        try
+        {
             var userInfo = await client.GetSettingsAsync();
 
             return Ok(new
@@ -100,9 +104,11 @@ public class JellySeedrController : ControllerBase
         }
         catch (Exception ex)
         {
-            return BadRequest(new { 
-                loggedIn = false, 
-                message = "Error fetching Seedr info: " + ex.Message }
+            return BadRequest(new
+            {
+                loggedIn = false,
+                message = "Error fetching Seedr info: " + ex.Message
+            }
             );
         }
     }
@@ -120,31 +126,31 @@ public class JellySeedrController : ControllerBase
     [Route("login")]
     public IActionResult SeedrLogin([FromForm] string username, [FromForm] string password)
     {
-            if (string.IsNullOrEmpty(password))
-            {
-                return BadRequest(new { message = "password is required" });
-            }
+        if (string.IsNullOrEmpty(password))
+        {
+            return BadRequest(new { message = "password is required" });
+        }
 
-            try
+        try
+        {
+            var result = SeedrClient.FromPasswordAsync(username, password, onRefreshSeedrToken, _httpClientFactory.CreateClient()).Result;
+            if (result == null)
             {
-                var result = SeedrClient.FromPasswordAsync(username, password, onRefreshSeedrToken, _httpClientFactory.CreateClient()).Result;
-                if (result == null)
-                {
-                    return BadRequest(new { message = "Login failed, no token received." });
-                }
-                seedrccClient = result;
-                var token = seedrccClient.Token;
-                onRefreshSeedrToken(token); // Persist the token in config
-                return Ok(new { message = "Login successful" });
+                return BadRequest(new { message = "Login failed, no token received." });
             }
-            catch (AuthenticationException)
-            {
-                return BadRequest(new { message = "Invalid username or password." });
-            }
-            catch (Exception ex)
-            {
-                return BadRequest(new { message = "Error during login: " + ex.Message });
-            }
+            seedrccClient = result;
+            var token = seedrccClient.Token;
+            onRefreshSeedrToken(token); // Persist the token in config
+            return Ok(new { message = "Login successful" });
+        }
+        catch (AuthenticationException)
+        {
+            return BadRequest(new { message = "Invalid username or password." });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = "Error during login: " + ex.Message });
+        }
     }
 
     [HttpPost]
@@ -159,9 +165,6 @@ public class JellySeedrController : ControllerBase
         }
         return Ok(new { message = "Logged out" });
     }
-
-
-    private enum SeedrInputType { Unknown, TorrentFile, TorrentUrl, MagnetLink }
 
     private SeedrInputType DetectSeedrInput(string? input, IFormFile? file)
     {
@@ -182,51 +185,65 @@ public class JellySeedrController : ControllerBase
 
     [HttpPost]
     [Route("submit")]
-    public async Task<IActionResult> SeedrSubmit([FromForm] string? input, [FromForm] IFormFile? torrentFile)
+    public async Task<IActionResult> SeedrSubmit([FromForm] string? input, [FromForm] IFormFile? torrentFile, [FromForm] string destinationPath)
     {
         if (seedrccClient == null)
         {
+            _logger.LogWarning("SeedrSubmit failed: Not logged in to Seedr.");
             return Unauthorized(new { message = "Not logged in to Seedr" });
         }
 
+        if (!isValidLibraryPath(destinationPath))
+        {
+            _logger.LogWarning("SeedrSubmit failed: Invalid destination path '{DestinationPath}'", destinationPath);
+            return BadRequest(new { message = "Invalid destination path" });
+        }
+
         var type = DetectSeedrInput(input, torrentFile);
+
+        var seedrTorrentAddParam = new SeedrTorrentAddParam
+        {
+            InputType = type,
+            DeleteAfterDownload = true,
+            DownloadExtensions = config?.DownloadFileTypes ?? new HashSet<string> { },
+            DestinationPath = destinationPath
+        };
 
         try
         {
             switch (type)
             {
                 case SeedrInputType.TorrentFile:
-                {
-                    // Save temporary file and submit to Seedr (integration point)
-                    var tempPath = Path.GetTempFileName();
-                    using (var fs = System.IO.File.Create(tempPath))
                     {
-                        await torrentFile!.CopyToAsync(fs);
+                        // Save temporary file and submit to Seedr (integration point)
+                        var tempPath = Path.GetTempFileName();
+                        using (var fs = System.IO.File.Create(tempPath))
+                        {
+                            await torrentFile!.CopyToAsync(fs);
+                        }
+
+                        seedrTorrentAddParam.Source = tempPath;
+                        var (res, msg) = await seedrManager.HandleTorrentTask(seedrccClient, seedrTorrentAddParam);
+
+                        System.IO.File.Delete(tempPath);
+                        return res == 200 ? Ok(new { message = msg }) : BadRequest(new { message = msg });
                     }
 
-                    // TODO: call Seedrcc wrapper to upload the torrent file using config.SeedrToken
-                    // Example (pseudocode): SeedrClient.AddTorrentFromFile(config.SeedrToken, tempPath);
-
-                    System.IO.File.Delete(tempPath);
-                    return Ok(new { message = "Torrent file received and submitted (stub)" });
-                }
-
                 case SeedrInputType.TorrentUrl:
-                    // TODO: call Seedrcc wrapper to add torrent from URL
-                    // Example (pseudocode): SeedrClient.AddTorrentFromUrl(config.SeedrToken, input);
-                    return Ok(new { message = "Torrent URL submitted (stub)", url = input });
-
                 case SeedrInputType.MagnetLink:
-                    // TODO: call Seedrcc wrapper to add magnet link
-                    // Example (pseudocode): SeedrClient.AddMagnet(config.SeedrToken, input);
-                    return Ok(new { message = "Magnet link submitted (stub)", magnet = input });
-
+                    {
+                        seedrTorrentAddParam.Source = input ?? string.Empty;
+                        var (res, msg) = await seedrManager.HandleTorrentTask(seedrccClient, seedrTorrentAddParam);
+                        return res == 200 ? Ok(new { message = msg }) : BadRequest(new { message = msg });
+                    }
                 default:
+                    _logger.LogWarning("SeedrSubmit failed: Unable to determine input type.");
                     return BadRequest(new { message = "Unable to determine input type. Provide a torrent file, a .torrent/http URL or a magnet link." });
             }
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Exception occurred during SeedrSubmit execution.");
             return BadRequest(new { message = ex.Message });
         }
     }
@@ -307,9 +324,13 @@ public class JellySeedrController : ControllerBase
         {
             return Unauthorized(new { message = "Not logged in to Seedr" });
         }
-
         try
         {
+            if (!isValidLibraryPath(request.DestinationPath))
+            {
+                return BadRequest(new { message = "Invalid library path." });
+            }
+
             var (statusCode, message) = await seedrManager.FetchFiles(seedrccClient, request);
             if (statusCode == 200)
             {
@@ -324,6 +345,14 @@ public class JellySeedrController : ControllerBase
         {
             return BadRequest(new { message = ex.Message });
         }
+    }
+
+
+    private bool isValidLibraryPath(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return false;
+        var isValid = _libraryManager.GetVirtualFolders(true).Any(v => v.Locations.Contains(path));
+        return isValid;
     }
 
 }

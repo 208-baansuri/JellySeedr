@@ -159,7 +159,7 @@
     }
 
     function getCheckBox(itemId) {
-        const clb = el('label', 'emby-checkbox-label'); 
+        const clb = el('label', 'emby-checkbox-label');
         const cb = el('input', 'seedr-c emby-checkbox'); cb.type = 'checkbox'; cb.dataset.itemId = itemId; cb.onchange = checkpointChangeHandler;
         const emptySpan = el('span', 'checkboxLabel')
         const checkboxOutline = el('span', 'checkboxOutline');
@@ -181,11 +181,11 @@
         const tg = el('button', 'seedr-tg p'); tg.type = 'button'; tg.disabled = true;
         const cb = getCheckBox(n.id);
         row.append(tg, cb, el('div', 'seedr-n', n.name || '(unnamed)'), el('div', 'seedr-s', bytes(n.size)));
-        row.onclick = (e) => { 
+        row.onclick = (e) => {
             const input = row.querySelector('input[type="checkbox"]');
-            if (e.target !== tg && e.target !== cb && e.target !== input) { 
-                input.checked = !input.checked; 
-                input.dispatchEvent(new Event('change')); 
+            if (e.target !== tg && e.target !== cb && e.target !== input) {
+                input.checked = !input.checked;
+                input.dispatchEvent(new Event('change'));
             }
         }
         return row;
@@ -195,16 +195,16 @@
         const n = reg(folder, parent, 'folder');
         const wrap = el('div', 'seedr-folder-wrapper');
         const row = el('div', 'seedr-r seeder-folder');
-        const tg = el('button', 'seedr-tg'); tg.type = 'button'; 
+        const tg = el('button', 'seedr-tg'); tg.type = 'button';
         const isExpanded = state.expanded.has(n.id);
         tg.innerHTML = isExpanded ? explandLessIconHTML : explandMoreIconHTML;
         const cb = getCheckBox(n.id);
         row.append(tg, cb, el('div', 'seedr-n', n.name || '(unnamed)'), el('div', 'seedr-s', bytes(n.size)));
-        row.onclick = (e) => { if (e.target !== tg && e.target !== cb) { tg.click();} };
+        row.onclick = (e) => { if (e.target !== tg && e.target !== cb) { tg.click(); } };
         const children = el('div', 'seedr-ch'); children.hidden = !isExpanded;
-        tg.onclick = (e) => { 
-            e.stopPropagation(); 
-            children.hidden = !children.hidden; 
+        tg.onclick = (e) => {
+            e.stopPropagation();
+            children.hidden = !children.hidden;
             tg.innerHTML = children.hidden ? explandMoreIconHTML : explandLessIconHTML;
             if (!children.hidden) state.expanded.add(n.id); else state.expanded.delete(n.id);
         };
@@ -241,14 +241,11 @@
 
     async function run(action, label) {
         const items = selected().map((n) => ({ id: n.id, kind: n.kind, name: n.name, size: Number(n.size || 0), path: n.path || '' }));
-        const librarySelect = document.getElementById('jellyfinLibrary');
-        const destinationId = librarySelect ? librarySelect.value : '';
-        const destinationPath = libraryOptions.get(destinationId)?.storagePath || '';
         if (!items.length) return summary();
         if (action === 'delete' && !confirm(`Delete ${items.length} selected item(s)?`)) return;
         loadState(true, label);
         try {
-            const res = await fetch(`${api}/${action}`, { method: 'POST', headers: h({ 'Content-Type': 'application/json' }), body: JSON.stringify({ 'items': items, 'destinationPath': destinationPath }) });
+            const res = await fetch(`${api}/${action}`, { method: 'POST', headers: h({ 'Content-Type': 'application/json' }), body: JSON.stringify({ 'items': items, 'destinationPath': getSelectedLibraryPath() }) });
             const json = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(json.message || `Seedr ${action} failed`);
             if (action === 'delete') { state.selection.clear(); await load(); clearMsg(); }
