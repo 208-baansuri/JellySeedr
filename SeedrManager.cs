@@ -253,6 +253,10 @@ public class SeedrManager
             switch (param.InputType)
             {
                 case SeedrInputType.TorrentFile:
+                    {
+                        result = await client.AddTorrentAsync(torrentBytes: param.TorrentBytes);
+                        break;
+                    }
                 case SeedrInputType.TorrentUrl:
                     {
                         result = await client.AddTorrentAsync(torrentFile: param.Source);
@@ -711,6 +715,8 @@ public sealed class SeedrTorrentAddParam
     public SeedrInputType InputType { get; set; }
 
     public string Source { get; set; } = string.Empty;
+
+    public byte[] TorrentBytes { get; set; } = [];
 
     public HashSet<string> DownloadExtensions { get; set; } = [];
 

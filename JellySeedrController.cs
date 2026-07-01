@@ -74,7 +74,7 @@ public class JellySeedrController : ControllerBase
                 seedrccClient = client;
                 return result;
             }
-            
+
             // If we can't get user info, the token is probably invalid. Clear it.
             Plugin.Instance!.SaveSeedrToken(null);
         }
@@ -156,7 +156,7 @@ public class JellySeedrController : ControllerBase
             seedrccClient = result;
             var token = seedrccClient.Token;
             onRefreshSeedrToken(token); // Persist the token
-            
+
             bool shouldSave = saveCredentials == "true" || saveCredentials == "on" || saveCredentials == "1";
             if (shouldSave)
             {
@@ -239,31 +239,31 @@ public class JellySeedrController : ControllerBase
             {
                 case SeedrInputType.TorrentFile:
                     {
-                        // Save temporary file and submit to Seedr (integration point)
-                        var tempPath = Path.GetTempFileName();
-                        using (var fs = System.IO.File.Create(tempPath))
+                        if (torrentFile != null && torrentFile.Length > 0)
                         {
-                            await torrentFile!.CopyToAsync(fs);
+                            using (var ms = new MemoryStream())
+                            {
+                                await torrentFile.CopyToAsync(ms);
+                                seedrTorrentAddParam.TorrentBytes = ms.ToArray();
+                            }
                         }
-
-                        seedrTorrentAddParam.Source = tempPath;
-                        var (res, msg) = await seedrManager.HandleTorrentTask(seedrccClient, seedrTorrentAddParam);
-
-                        System.IO.File.Delete(tempPath);
-                        return res == 200 ? Ok(new { message = msg }) : BadRequest(new { message = msg });
+                        break;
                     }
 
                 case SeedrInputType.TorrentUrl:
                 case SeedrInputType.MagnetLink:
                     {
                         seedrTorrentAddParam.Source = input ?? string.Empty;
-                        var (res, msg) = await seedrManager.HandleTorrentTask(seedrccClient, seedrTorrentAddParam);
-                        return res == 200 ? Ok(new { message = msg }) : BadRequest(new { message = msg });
+                        break;
                     }
                 default:
                     _logger.LogWarning("SeedrSubmit failed: Unable to determine input type.");
                     return BadRequest(new { message = "Unable to determine input type. Provide a torrent file, a .torrent/http URL or a magnet link." });
             }
+
+            var (res, msg) = await seedrManager.HandleTorrentTask(seedrccClient, seedrTorrentAddParam);
+
+            return res == 200 ? Ok(new { message = msg }) : BadRequest(new { message = msg });
         }
         catch (Exception ex)
         {
