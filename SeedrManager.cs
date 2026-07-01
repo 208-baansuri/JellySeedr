@@ -253,16 +253,12 @@ public class SeedrManager
             switch (param.InputType)
             {
                 case SeedrInputType.TorrentFile:
+                case SeedrInputType.TorrentUrl:
                     {
                         result = await client.AddTorrentAsync(torrentFile: param.Source);
                         break;
                     }
                 case SeedrInputType.MagnetLink:
-                    {
-                        result = await client.AddTorrentAsync(magnetLink: param.Source);
-                        break;
-                    }
-                case SeedrInputType.TorrentUrl:
                     {
                         result = await client.AddTorrentAsync(magnetLink: param.Source);
                         break;
