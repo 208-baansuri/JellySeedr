@@ -204,9 +204,10 @@ public class JellySeedrController : ControllerBase
         var seedrTorrentAddParam = new SeedrTorrentAddParam
         {
             InputType = type,
-            DeleteAfterDownload = true,
+            DeleteAfterDownload = config?.DeleteAfterDownload ?? true,
             DownloadExtensions = config?.DownloadFileTypes ?? new HashSet<string> { },
-            DestinationPath = destinationPath
+            DestinationPath = destinationPath,
+            ClashResolution = GetFetchNameClashResolution()
         };
 
         try
@@ -331,15 +332,8 @@ public class JellySeedrController : ControllerBase
                 return BadRequest(new { message = "Invalid library path." });
             }
 
-            var (statusCode, message) = await seedrManager.FetchFiles(seedrccClient, request);
-            if (statusCode == 200)
-            {
-                return Ok(new { message });
-            }
-            else
-            {
-                return BadRequest(new { message });
-            }
+            var (statusCode, message) = await seedrManager.FetchFiles(seedrccClient, request, GetFetchNameClashResolution());
+            return statusCode == 200 ? Ok(new { message }) : BadRequest(new { message });
         }
         catch (Exception ex)
         {
@@ -373,6 +367,13 @@ public class JellySeedrController : ControllerBase
         if (string.IsNullOrEmpty(path)) return false;
         var isValid = _libraryManager.GetVirtualFolders(true).Any(v => v.Locations.Contains(path));
         return isValid;
+    }
+
+    private FetchNameClashResolution GetFetchNameClashResolution()
+    {
+        FetchNameClashResolution res = FetchNameClashResolution.Rename;
+        Enum.TryParse<FetchNameClashResolution>(config!.NameClashResolution, true, out res);
+        return res;
     }
 
 }

@@ -13,7 +13,55 @@
             <div class="content-primary">
                 <div id="SeedrSection" style="margin-top: 20px;">
                     <div class="inputContainer">
-                        <h2>Seedr</h2>
+                        <div style="display: flex; align-items: center;">
+                            <h2 style="margin: 0;">Seedr</h2>
+                            <button class="fab emby-button" title="Settings" id="seedrSettingsToggleBtn"
+                                style="margin-left: 1em;">
+                                <span class="material-icons settings" aria-hidden="true"></span>
+                            </button>
+                        </div>
+                        <div id="seedrSettingsBlock"
+                            style="display: none; margin-top: 15px; margin-bottom: 25px; padding: 1em; background: rgba(0,0,0,0.2); border-radius: 6px; border: 1px solid rgba(255,255,255,0.08); max-width: 52em;">
+                            <h3 style="margin-top: 0; margin-bottom: 15px;">Settings</h3>
+
+                            <div class="checkboxContainer checkboxContainer-withcolor">
+                                <label>
+                                    <input type="checkbox" is="emby-checkbox" id="deleteAfterDownloadCheckbox" />
+                                    <span>Delete files from Seedr after download</span>
+                                </label>
+                            </div>
+
+                            <div class="selectContainer" style="margin-top: 15px;">
+                                <label for="nameClashResolutionSelect"
+                                    style="display: block; margin-bottom: 5px;">Naming Clash Resolution</label>
+                                <select id="nameClashResolutionSelect" class="emby-select-withcolor emby-select">
+                                    <option value="Rename">Rename</option>
+                                    <option value="Overwrite">Overwrite</option>
+                                    <option value="Skip">Skip</option>
+                                </select>
+                                <div class="fieldDescription">
+                                    <span>Choose what to do if the file name already exists in your library.</span>
+                                </div>
+                                <div class="selectArrowContainer">
+                                    <span class="selectArrow material-icons keyboard_arrow_down"
+                                        aria-hidden="true"></span>
+                                </div>
+                            </div>
+
+                            <div class="checkboxContainer checkboxContainer-withcolor" style="margin-top: 15px;">
+                                <label>
+                                    <input type="checkbox" is="emby-checkbox" id="autoDownloadCheckbox" />
+                                    <span>Auto download files with matching extensions</span>
+                                </label>
+                            </div>
+
+                            <div class="inputContainer" style="margin-top: 15px;">
+                                <label for="downloadFileTypesInput" style="display: block; margin-bottom: 5px;">File
+                                    Extensions (separated by space)</label>
+                                <input type="text" id="downloadFileTypesInput" class="emby-input"
+                                    placeholder="mp4 srt mkv" />
+                            </div>
+                        </div>
                         <div id="seedrStatus">
                             <span id="seedr_status_text">checking...</span>
                             <span type="button" id="seedr_logout_btn" style="display:none;"
@@ -145,6 +193,68 @@
                 }
                 finally {
                     Dashboard.hideLoadingMsg();
+                }
+            }
+
+            let lastSavedExtensions = '';
+
+            async function loadPluginSettings() {
+                try {
+                    const config = await ApiClient.getPluginConfiguration(JellySeedrConfig.pluginUniqueId);
+
+                    document.getElementById('deleteAfterDownloadCheckbox').checked = config.DeleteAfterDownload !== false;
+                    document.getElementById('autoDownloadCheckbox').checked = config.AutoDownload !== false;
+
+                    const resolutionSelect = document.getElementById('nameClashResolutionSelect');
+                    if (resolutionSelect) {
+                        resolutionSelect.value = config.NameClashResolution || 'Rename';
+                    }
+
+                    const extensionsInput = document.getElementById('downloadFileTypesInput');
+                    if (extensionsInput) {
+                        let extArray = [];
+                        if (Array.isArray(config.DownloadFileTypes)) {
+                            extArray = config.DownloadFileTypes;
+                        } else if (config.DownloadFileTypes && typeof config.DownloadFileTypes === 'object') {
+                            extArray = Object.values(config.DownloadFileTypes);
+                        }
+                        const extStr = extArray.join(' ');
+                        extensionsInput.value = extStr;
+                        lastSavedExtensions = extStr;
+                    }
+                } catch (e) {
+                    console.warn('Failed to load plugin settings', e);
+                }
+            }
+
+            async function savePluginSettings() {
+                try {
+                    const config = await ApiClient.getPluginConfiguration(JellySeedrConfig.pluginUniqueId);
+
+                    const deleteVal = document.getElementById('deleteAfterDownloadCheckbox').checked;
+                    const autoVal = document.getElementById('autoDownloadCheckbox').checked;
+                    const clashVal = document.getElementById('nameClashResolutionSelect').value;
+                    const inputVal = document.getElementById('downloadFileTypesInput').value.trim();
+
+                    const extArray = inputVal ? inputVal.split(/\s+/).filter(Boolean) : [];
+                    const normalizedInput = extArray.join(' ');
+
+                    if (config.DeleteAfterDownload === deleteVal &&
+                        config.AutoDownload === autoVal &&
+                        config.NameClashResolution === clashVal &&
+                        lastSavedExtensions === normalizedInput) {
+                        return;
+                    }
+
+                    config.DeleteAfterDownload = deleteVal;
+                    config.AutoDownload = autoVal;
+                    config.NameClashResolution = clashVal;
+                    config.DownloadFileTypes = extArray;
+
+                    await ApiClient.updatePluginConfiguration(JellySeedrConfig.pluginUniqueId, config);
+                    lastSavedExtensions = normalizedInput;
+                } catch (e) {
+                    console.warn('Failed to save plugin settings', e);
                 }
             }
 
@@ -442,6 +552,22 @@
             document.querySelector('#JellySeedrConfigPage').addEventListener('pageshow', async function () {
                 await updateSeedrUI();
                 await loadJellyfinLibraries();
+                await loadPluginSettings();
+
+                // Bind settings change listeners
+                document.getElementById('deleteAfterDownloadCheckbox').addEventListener('change', savePluginSettings);
+                document.getElementById('autoDownloadCheckbox').addEventListener('change', savePluginSettings);
+                document.getElementById('nameClashResolutionSelect').addEventListener('change', savePluginSettings);
+                document.getElementById('downloadFileTypesInput').addEventListener('change', savePluginSettings);
+
+                document.getElementById('seedrSettingsToggleBtn').onclick = function () {
+                    const settingsBlock = document.getElementById('seedrSettingsBlock');
+                    if (settingsBlock.style.display === 'none') {
+                        settingsBlock.style.display = 'block';
+                    } else {
+                        settingsBlock.style.display = 'none';
+                    }
+                };
 
                 const listContainer = document.getElementById('activeTasksList');
                 if (listContainer) {

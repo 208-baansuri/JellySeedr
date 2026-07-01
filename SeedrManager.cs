@@ -61,7 +61,7 @@ public class SeedrManager
     }
 
 
-    public async Task<(int code, string message)> FetchFiles(SeedrClient client, SeedrSelectionRequest request, List<Task>? tasksCollection = null, List<uint>? jellySeedrTaskCollection = null)
+    public async Task<(int code, string message)> FetchFiles(SeedrClient client, SeedrSelectionRequest request, FetchNameClashResolution clashResolution, List<Task>? tasksCollection = null, List<uint>? jellySeedrTaskCollection = null)
     {
         try
         {
@@ -91,7 +91,7 @@ public class SeedrManager
                         ActiveTasks[newTask.Id] = newTask;
                     }
                     jellySeedrTaskCollection?.Add(newTask.Id);
-                    var createdTask = FetchFileAsync(newTask, fileFetchTask);
+                    var createdTask = FetchFileAsync(newTask, fileFetchTask, clashResolution);
                     tasksCollection?.Add(createdTask);
 
                     fetchedFiles++;
@@ -353,7 +353,11 @@ public class SeedrManager
 
             if (seedrFolder != null)
             {
-                await ScanAndFetchMatchingFilesAsync(client, seedrFolder, param);
+                var autoDownload = Plugin.Instance?.Configuration?.AutoDownload ?? true;
+                if (autoDownload)
+                {
+                    await ScanAndFetchMatchingFilesAsync(client, seedrFolder, param);
+                }
             }
         }
         catch (Exception ex)
@@ -419,7 +423,7 @@ public class SeedrManager
         if (selectionRequest.Items.Count > 0)
         {
             List<Task> fetchTasks = [];
-            await FetchFiles(client, selectionRequest, fetchTasks, jellySeedrTaskIds);
+            await FetchFiles(client, selectionRequest, param.ClashResolution, fetchTasks, jellySeedrTaskIds);
             await Task.WhenAll(fetchTasks);
         }
         else
@@ -435,21 +439,25 @@ public class SeedrManager
 
         if (allCompleted)
         {
-            var jellySeedrDeleteTask = new JellySeedrDeleteTask
+            var deleteAfterDownload = Plugin.Instance?.Configuration?.DeleteAfterDownload ?? true;
+            if (deleteAfterDownload)
             {
-                Id = seedrFolder.Id.ToString(),
-                Path = seedrFolder.Fullname,
-                Kind = "folder"
-            };
+                var jellySeedrDeleteTask = new JellySeedrDeleteTask
+                {
+                    Id = seedrFolder.Id.ToString(),
+                    Path = seedrFolder.Fullname,
+                    Kind = "folder"
+                };
 
-            var newTask = CreateNewJellySeedrTask(JellySeedrTaskType.Delete, jellySeedrDeleteTask);
-            newTask.Status = JellySeedrTaskStatus.Pending;
-            lock (ActiveTasks)
-            {
-                ActiveTasks[newTask.Id] = newTask;
+                var newTask = CreateNewJellySeedrTask(JellySeedrTaskType.Delete, jellySeedrDeleteTask);
+                newTask.Status = JellySeedrTaskStatus.Pending;
+                lock (ActiveTasks)
+                {
+                    ActiveTasks[newTask.Id] = newTask;
+                }
+
+                await HandleDeleteTask(client, newTask);
             }
-
-            await HandleDeleteTask(client, newTask);
         }
     }
 
@@ -713,6 +721,8 @@ public sealed class SeedrTorrentAddParam
     public string DestinationPath { get; set; } = string.Empty;
 
     public bool DeleteAfterDownload { get; set; } = false;
+
+    public FetchNameClashResolution ClashResolution { get; set; } = FetchNameClashResolution.Rename;
 
 }
 
