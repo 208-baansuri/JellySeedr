@@ -38,7 +38,7 @@
                         <div id="seedrActions" style="display:none; margin-top: 20px;">
                             <form id="seedrSubmitForm">
                                 <div id="jellyfinLibrariesSection">
-                                    <h3>Download torrents to</h3>
+                                    <h3>Download files to</h3>
                                     <div class="selectContainer">
                                         <select id="jellyfinLibrary" class="emby-select-withcolor emby-select">
                                             <option value="">Loading...</option>
@@ -61,12 +61,22 @@
                                 </div>
                                 <div style="display:flex; gap:.5em; align-items:center; margin-top:.5em;">
                                     <button is="emby-button" type="submit" id="seedr_submit_btn"
-                                        class="raised button-submit block emby-button">Start Seedr download</button>
+                                        class="raised button-submit block emby-button">Start Seedr Download</button>
                                     <button is="emby-button" type="button" id="seedr_browse_files_btn"
-                                        class="raised button-submit block emby-button">Browse Seedr files</button>
+                                        class="raised button-submit block emby-button">Browse Seedr Files</button>
                                 </div>
                                 <p id="seedr_message" style="color:green;"></p>
                             </form>
+                            <div id="activeTasksSection" style="margin-top: 30px; max-width: 54em">
+                                <h3>Task Status</h3>
+                                <div id="activeTasksList" class="paperList">
+                                    <div class="listItem">
+                                        <div class="listItemBody">
+                                            <div class="listItemBodyText secondary">No active tasks</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -90,8 +100,6 @@
 
                 return await fetch(url, reqInit);
             }
-
-            document.querySelector('#JellySeedrConfigPage').addEventListener('pageshow', updateSeedrUI);
 
             async function updateSeedrUI() {
                 try {
@@ -275,9 +283,16 @@
                 const res = await fetchWithAuth('/jellyseedr/submit', 'POST', form);
                 if (res.ok) {
                     const js = await res.json();
-                    document.getElementById('seedr_message').textContent = js.message || 'Submitted';
+                    const msgEl = document.getElementById('seedr_message');
+                    msgEl.textContent = js.message || 'Submitted';
+                    setTimeout(function () {
+                        if (msgEl.textContent === (js.message || 'Submitted')) {
+                            msgEl.textContent = '';
+                        }
+                    }, 5000);
                     // clear file after submit
                     document.getElementById('seedrFile').value = '';
+                    document.getElementById('seedrInput').value = '';
                     return;
                 }
                 else {
@@ -298,7 +313,155 @@
                 }
             });
 
-            document.querySelector('#JellySeedrConfigPage').addEventListener('pageshow', loadJellyfinLibraries);
+            let taskPollingInterval = null;
+
+            async function loadActiveTasks() {
+                try {
+                    const res = await fetchWithAuth('/jellyseedr/tasks', 'GET');
+                    if (!res.ok) return;
+                    const tasks = await res.json();
+
+                    const listContainer = document.getElementById('activeTasksList');
+                    if (!listContainer) return;
+
+                    if (!tasks || tasks.length === 0) {
+                        listContainer.innerHTML = '<div class="listItem"><div class="listItemBody"><div class="listItemBodyText secondary">No active tasks</div></div></div>';
+                        return;
+                    }
+
+                    let html = '';
+                    tasks.forEach(task => {
+                        let name = '';
+                        let detailsText = '';
+                        let showCross = false;
+
+                        const taskId = task.Id || task.id;
+
+                        let statusDesc = task.Status || task.status;
+                        const statusMap = ['Pending', 'In Progress', 'Completed', 'Failed', 'Cancelled'];
+                        if (typeof statusDesc === 'number') {
+                            statusDesc = statusMap[statusDesc] || 'Unknown';
+                        }
+
+                        const currentStatus = task.Status || task.status;
+                        if (currentStatus === 2 || currentStatus === 3 || currentStatus === 4 ||
+                            currentStatus === 'Completed' || currentStatus === 'Failed' || currentStatus === 'Cancelled') {
+                            showCross = true;
+                        }
+
+                        const isCompleted = (currentStatus === 2 || currentStatus === 'Completed');
+                        const isFailed = (currentStatus === 3 || currentStatus === 'Failed');
+                        const isCancelled = (currentStatus === 4 || currentStatus === 'Cancelled');
+
+                        // Type enum: Torrent = 0, Fetch = 1, Delete = 2
+                        if (task.Type === 0 || task.type === 0 || task.Type === 'Torrent' || task.type === 'Torrent') {
+                            name = 'Torrent: ' + ((task.TorrentTask || task.torrentTask)?.TorrentName);
+                            if (isCompleted || isFailed || isCancelled) {
+                                detailsText = statusDesc;
+                            } else {
+                                detailsText = statusDesc + ' - Torrent Download: ' + ((task.TorrentTask || task.torrentTask)?.Progress || 0) + '%';
+                            }
+                        } else if (task.Type === 1 || task.type === 1 || task.Type === 'Fetch' || task.type === 'Fetch') {
+                            const fetchTask = task.FetchTask || task.fetchTask;
+                            name = 'Fetch: ' + (fetchTask?.SourceFileName);
+                            if (isCompleted || isFailed || isCancelled) {
+                                detailsText = statusDesc;
+                            } else {
+                                const bytes = fetchTask?.BytesCopied || 0;
+                                const total = fetchTask?.FileSize || 0;
+                                const pct = total > 0 ? ((bytes / total) * 100).toFixed(1) : 0;
+                                detailsText = statusDesc + ' - Fetching file: ' + pct + '% (' + formatBytes(bytes) + ' / ' + formatBytes(total) + ')';
+                            }
+                        } else if (task.Type === 2 || task.type === 2 || task.Type === 'Delete' || task.type === 'Delete') {
+                            name = 'Cleanup: ' + ((task.DeleteTask || task.deleteTask)?.Path || 'Folder');
+                            detailsText = statusDesc;
+                        }
+
+                        const errorMsg = task.ErrorMessage || task.errorMessage;
+                        const errorHtml = (isFailed && errorMsg) ? ' <span style="color:#ff5252; margin-left:0.5em; text-align: left;">(Error: ' + errorMsg + ')</span>' : '';
+
+                        html += '<div class="listItem paperListItem" style="display:flex; align-items:center; justify-content:flex-start; padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); text-align: left; width: 100%; box-sizing: border-box;">' +
+                            '<div style="flex:1; display:flex; align-items:center; justify-content:flex-start; text-align: left; gap: 1em; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-right: 1em;">' +
+                            '<span style="font-weight: 500; text-align: left; min-width: fit-content;">' + name + '</span>' +
+                            '<span class="secondary" style="text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + detailsText + errorHtml + '</span>' +
+                            '</div>';
+
+                        if (showCross) {
+                            html += '<button type="button" class="paper-icon-button-light emby-button remove-task-btn" data-task-id="' + (task.Id || task.id) + '" title="Remove Task" style="background:transparent; border:none; color:inherit; cursor:pointer; padding: 5px; display: flex; align-items: center; justify-content: center; margin-left: auto; flex-shrink: 0;">' +
+                                '<span class="material-icons">close</span>' +
+                                '</button>';
+                        }
+
+                        html += '</div>';
+                    });
+
+                    listContainer.innerHTML = html;
+                } catch (e) {
+                    console.warn('Failed to load active tasks', e);
+                }
+            }
+
+            function formatBytes(bytes, decimals = 2) {
+                if (bytes === 0) return '0 Bytes';
+                const k = 1024;
+                const dm = decimals < 0 ? 0 : decimals;
+                const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+            }
+
+            async function removeActiveTask(taskId) {
+                try {
+                    const form = new FormData();
+                    form.append('taskId', taskId);
+                    const res = await fetchWithAuth('/jellyseedr/tasks/remove', 'POST', form);
+                    if (res.ok) {
+                        await loadActiveTasks();
+                    } else {
+                        const js = await res.json();
+                        alert(js.message || 'Failed to remove task');
+                    }
+                } catch (e) {
+                    console.warn('Failed to remove task', e);
+                }
+            }
+
+            function startTaskPolling() {
+                loadActiveTasks();
+                if (taskPollingInterval) clearInterval(taskPollingInterval);
+                taskPollingInterval = setInterval(loadActiveTasks, 3000);
+            }
+
+            function stopTaskPolling() {
+                if (taskPollingInterval) {
+                    clearInterval(taskPollingInterval);
+                    taskPollingInterval = null;
+                }
+            }
+
+            document.querySelector('#JellySeedrConfigPage').addEventListener('pageshow', async function () {
+                await updateSeedrUI();
+                await loadJellyfinLibraries();
+
+                const listContainer = document.getElementById('activeTasksList');
+                if (listContainer) {
+                    listContainer.onclick = function (e) {
+                        const btn = e.target.closest('.remove-task-btn');
+                        if (btn) {
+                            const taskId = btn.getAttribute('data-task-id');
+                            if (taskId) {
+                                removeActiveTask(taskId);
+                            }
+                        }
+                    };
+                }
+
+                startTaskPolling();
+            });
+
+            document.querySelector('#JellySeedrConfigPage').addEventListener('pagehide', function () {
+                stopTaskPolling();
+            });
 
         </script>
         <script type="text/javascript" src="/jellyseedr/seedr-browser.js"></script>

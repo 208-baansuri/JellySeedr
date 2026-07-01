@@ -86,7 +86,10 @@ public class SeedrManager
 
 
                     var newTask = CreateNewJellySeedrTask(JellySeedrTaskType.Fetch, fileFetchTask);
-                    ActiveTasks[newTask.Id] = newTask;
+                    lock (ActiveTasks)
+                    {
+                        ActiveTasks[newTask.Id] = newTask;
+                    }
                     jellySeedrTaskCollection?.Add(newTask.Id);
                     var createdTask = FetchFileAsync(newTask, fileFetchTask);
                     tasksCollection?.Add(createdTask);
@@ -282,7 +285,10 @@ public class SeedrManager
 
             var newTask = CreateNewJellySeedrTask(JellySeedrTaskType.Torrent, torrentTask);
             newTask.Status = JellySeedrTaskStatus.InProgress;
-            ActiveTasks[newTask.Id] = newTask;
+            lock (ActiveTasks)
+            {
+                ActiveTasks[newTask.Id] = newTask;
+            }
 
             _ = HandleTorrentCompletion(client, newTask, param);
 
@@ -327,6 +333,7 @@ public class SeedrManager
                     }
                     else
                     {
+                        torrentTask.Progress = 100;
                         task.Status = JellySeedrTaskStatus.Completed;
                         break;
                     }
@@ -420,7 +427,11 @@ public class SeedrManager
             _logger?.LogWarning("No files matching the allowed download extensions were found in folder '{FolderName}'.", seedrFolder.Name);
         }
 
-        var allCompleted = jellySeedrTaskIds.All(id => ActiveTasks[id].Status == JellySeedrTaskStatus.Completed);
+        bool allCompleted;
+        lock (ActiveTasks)
+        {
+            allCompleted = jellySeedrTaskIds.All(id => ActiveTasks.TryGetValue(id, out var t) && t.Status == JellySeedrTaskStatus.Completed);
+        }
 
         if (allCompleted)
         {
@@ -433,7 +444,10 @@ public class SeedrManager
 
             var newTask = CreateNewJellySeedrTask(JellySeedrTaskType.Delete, jellySeedrDeleteTask);
             newTask.Status = JellySeedrTaskStatus.Pending;
-            ActiveTasks[newTask.Id] = newTask;
+            lock (ActiveTasks)
+            {
+                ActiveTasks[newTask.Id] = newTask;
+            }
 
             await HandleDeleteTask(client, newTask);
         }
@@ -487,7 +501,25 @@ public class SeedrManager
         catch (Exception ex)
         {
             _logger?.LogError(ex, "Error deleting task {TaskId} in Seedr: {Message}", deleteTask.Id, ex.Message);
+            deleteTask.ErrorMessage = ex.Message;
+            deleteTask.Status = JellySeedrTaskStatus.Failed;
             return (500, $"Error deleting task: {ex.Message}");
+        }
+    }
+
+    public IReadOnlyCollection<JellySeedrTask> GetActiveTasks()
+    {
+        lock (ActiveTasks)
+        {
+            return ActiveTasks.Values.OrderBy(t => t.Id).ToList();
+        }
+    }
+
+    public bool RemoveTask(uint taskId)
+    {
+        lock (ActiveTasks)
+        {
+            return ActiveTasks.Remove(taskId);
         }
     }
 

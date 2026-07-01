@@ -348,6 +348,26 @@ public class JellySeedrController : ControllerBase
     }
 
 
+    [HttpGet]
+    [Route("tasks")]
+    public IActionResult GetActiveTasks()
+    {
+        return Ok(seedrManager.GetActiveTasks());
+    }
+
+    [HttpPost]
+    [Route("tasks/remove")]
+    public IActionResult RemoveTask([FromForm] uint taskId)
+    {
+        var removed = seedrManager.RemoveTask(taskId);
+        if (removed)
+        {
+            return Ok(new { message = "Task removed successfully" });
+        }
+        return NotFound(new { message = "Task not found" });
+    }
+
+
     private bool isValidLibraryPath(string? path)
     {
         if (string.IsNullOrEmpty(path)) return false;
