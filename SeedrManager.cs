@@ -531,6 +531,23 @@ public class SeedrManager
         }
     }
 
+    public void ClearCompletedTasks()
+    {
+        lock (ActiveTasks)
+        {
+            var keysToRemove = ActiveTasks.Where(kvp => 
+                kvp.Value.Status == JellySeedrTaskStatus.Completed ||
+                kvp.Value.Status == JellySeedrTaskStatus.Failed ||
+                kvp.Value.Status == JellySeedrTaskStatus.Cancelled
+            ).Select(kvp => kvp.Key).ToList();
+
+            foreach (var key in keysToRemove)
+            {
+                ActiveTasks.Remove(key);
+            }
+        }
+    }
+
     private JellySeedrTask CreateNewJellySeedrTask(JellySeedrTaskType type, object taskData)
     {
         var id = Interlocked.Increment(ref TaskIdCounter);

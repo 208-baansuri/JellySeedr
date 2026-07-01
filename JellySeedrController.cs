@@ -384,6 +384,14 @@ public class JellySeedrController : ControllerBase
         return NotFound(new { message = "Task not found" });
     }
 
+    [HttpPost]
+    [Route("tasks/clear-completed")]
+    public IActionResult ClearCompletedTasks()
+    {
+        seedrManager.ClearCompletedTasks();
+        return Ok(new { message = "Completed tasks cleared successfully" });
+    }
+
 
     private bool isValidLibraryPath(string? path)
     {

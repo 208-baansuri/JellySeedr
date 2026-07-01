@@ -122,7 +122,13 @@
                                 <p id="seedr_message" style="color:green;"></p>
                             </form>
                             <div id="activeTasksSection" style="margin-top: 30px; max-width: 54em">
-                                <h3>Task Status</h3>
+                                <div
+                                    style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+                                    <h3 style="margin: 0;">Task Status</h3>
+                                    <button type="button" id="clearAllTasksBtn" class="raised emby-button"
+                                        style="margin: 0; padding: 4px 10px; width: max-content; display: none; font-size: 0.9em;">Clear
+                                        Completed</button>
+                                </div>
                                 <div id="activeTasksList" class="paperList">
                                     <div class="listItem">
                                         <div class="listItemBody">
@@ -445,10 +451,13 @@
 
                     if (!tasks || tasks.length === 0) {
                         listContainer.innerHTML = '<div class="listItem"><div class="listItemBody"><div class="listItemBodyText secondary">No active tasks</div></div></div>';
+                        const clearBtn = document.getElementById('clearAllTasksBtn');
+                        if (clearBtn) clearBtn.style.display = 'none';
                         return;
                     }
 
                     let html = '';
+                    let hasClearable = false;
                     tasks.forEach(task => {
                         let name = '';
                         let detailsText = '';
@@ -506,6 +515,7 @@
                             '</div>';
 
                         if (showCross) {
+                            hasClearable = true;
                             html += '<button type="button" class="paper-icon-button-light emby-button remove-task-btn" data-task-id="' + (task.Id || task.id) + '" title="Remove Task" style="background:transparent; border:none; color:inherit; cursor:pointer; padding: 5px; display: flex; align-items: center; justify-content: center; margin-left: auto; flex-shrink: 0;">' +
                                 '<span class="material-icons">close</span>' +
                                 '</button>';
@@ -515,6 +525,10 @@
                     });
 
                     listContainer.innerHTML = html;
+                    const clearBtn = document.getElementById('clearAllTasksBtn');
+                    if (clearBtn) {
+                        clearBtn.style.display = hasClearable ? '' : 'none';
+                    }
                 } catch (e) {
                     console.warn('Failed to load active tasks', e);
                 }
@@ -542,6 +556,20 @@
                     }
                 } catch (e) {
                     console.warn('Failed to remove task', e);
+                }
+            }
+
+            async function clearAllCompletedTasks() {
+                try {
+                    const res = await fetchWithAuth('/jellyseedr/tasks/clear-completed', 'POST', null);
+                    if (res.ok) {
+                        await loadActiveTasks();
+                    } else {
+                        const js = await res.json();
+                        alert(js.message || 'Failed to clear tasks');
+                    }
+                } catch (e) {
+                    console.warn('Failed to clear completed tasks', e);
                 }
             }
 
@@ -577,6 +605,13 @@
                         settingsBlock.style.display = 'none';
                     }
                 };
+
+                const clearBtn = document.getElementById('clearAllTasksBtn');
+                if (clearBtn) {
+                    clearBtn.onclick = function () {
+                        clearAllCompletedTasks();
+                    };
+                }
 
                 const listContainer = document.getElementById('activeTasksList');
                 if (listContainer) {
