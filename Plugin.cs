@@ -1,4 +1,7 @@
 using System;
+using System.IO;
+using System.Text;
+using System.Security.Cryptography;
 using System.Globalization;
 using System.Collections.Generic;
 using JellySeedr.Configuration;
@@ -31,6 +34,148 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// Gets the current plugin instance.
     /// </summary>
     public static Plugin? Instance { get; private set; }
+
+    public string? GetSeedrToken()
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(ConfigurationFilePath);
+            if (string.IsNullOrEmpty(directory)) return null;
+            var filePath = Path.Combine(directory, "token.key");
+            if (File.Exists(filePath))
+            {
+                return File.ReadAllText(filePath);
+            }
+        }
+        catch
+        {
+            // Ignore
+        }
+        return null;
+    }
+
+    public void SaveSeedrToken(string? token)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(ConfigurationFilePath);
+            if (string.IsNullOrEmpty(directory)) return;
+            if (!Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+            var filePath = Path.Combine(directory, "token.key");
+            if (string.IsNullOrEmpty(token))
+            {
+                if (File.Exists(filePath))
+                {
+                    File.Delete(filePath);
+                }
+            }
+            else
+            {
+                File.WriteAllText(filePath, token);
+            }
+        }
+        catch
+        {
+            // Ignore
+        }
+    }
+
+    private static readonly byte[] CryptoKey = [0x50, 0xbe, 0x6a, 0xa0, 0x12, 0x0a, 0x48, 0xe1, 0x9b, 0xf1, 0xe9, 0x5a, 0x86, 0x75, 0x87, 0xe0];
+    private static readonly byte[] CryptoIv = [0x86, 0x75, 0x87, 0xe0, 0x50, 0xbe, 0x6a, 0xa0, 0x12, 0x0a, 0x48, 0xe1, 0x9b, 0xf1, 0xe9, 0x5a];
+
+    public void SaveCredentials(string username, string password)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(ConfigurationFilePath);
+            if (string.IsNullOrEmpty(directory)) return;
+            if (!Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+            var filePath = Path.Combine(directory, "credentials.key");
+            
+            var plainText = $"{username}\n{password}";
+            var cipherBytes = Encrypt(plainText);
+            File.WriteAllBytes(filePath, cipherBytes);
+        }
+        catch
+        {
+            // Ignore
+        }
+    }
+
+    public (string username, string password)? LoadCredentials()
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(ConfigurationFilePath);
+            if (string.IsNullOrEmpty(directory)) return null;
+            var filePath = Path.Combine(directory, "credentials.key");
+            if (!File.Exists(filePath)) return null;
+
+            var cipherBytes = File.ReadAllBytes(filePath);
+            var plainText = Decrypt(cipherBytes);
+            var parts = plainText.Split('\n', 2);
+            if (parts.Length == 2)
+            {
+                return (parts[0], parts[1]);
+            }
+        }
+        catch
+        {
+            // Ignore
+        }
+        return null;
+    }
+
+    public void DeleteCredentials()
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(ConfigurationFilePath);
+            if (string.IsNullOrEmpty(directory)) return;
+            var filePath = Path.Combine(directory, "credentials.key");
+            if (File.Exists(filePath))
+            {
+                File.Delete(filePath);
+            }
+        }
+        catch
+        {
+            // Ignore
+        }
+    }
+
+    private byte[] Encrypt(string plainText)
+    {
+        using var aes = Aes.Create();
+        aes.Key = CryptoKey;
+        aes.IV = CryptoIv;
+        using var encryptor = aes.CreateEncryptor(aes.Key, aes.IV);
+        using var ms = new MemoryStream();
+        using (var cs = new CryptoStream(ms, encryptor, CryptoStreamMode.Write))
+        using (var sw = new StreamWriter(cs, Encoding.UTF8))
+        {
+            sw.Write(plainText);
+        }
+        return ms.ToArray();
+    }
+
+    private string Decrypt(byte[] cipherText)
+    {
+        using var aes = Aes.Create();
+        aes.Key = CryptoKey;
+        aes.IV = CryptoIv;
+        using var decryptor = aes.CreateDecryptor(aes.Key, aes.IV);
+        using var ms = new MemoryStream(cipherText);
+        using var cs = new CryptoStream(ms, decryptor, CryptoStreamMode.Read);
+        using var sr = new StreamReader(cs, Encoding.UTF8);
+        return sr.ReadToEnd();
+    }
 
     // <inheritdoc />
     public IEnumerable<PluginPageInfo> GetPages()

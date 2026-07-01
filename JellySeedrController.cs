@@ -62,31 +62,50 @@ public class JellySeedrController : ControllerBase
         {
             return await getSeedrUserInfoAsync(seedrccClient);
         }
-        var tokenAvailable = config != null && !string.IsNullOrEmpty(config.SeedrToken);
+        var seedrTokenStr = Plugin.Instance!.GetSeedrToken();
+        var tokenAvailable = !string.IsNullOrEmpty(seedrTokenStr);
         if (tokenAvailable)
         {
-            Token seedrToken = Token.FromBase64(config!.SeedrToken!);
+            Token seedrToken = Token.FromBase64(seedrTokenStr!);
             var client = new SeedrClient(seedrToken, onRefreshSeedrToken, _httpClientFactory.CreateClient());
             var result = await getSeedrUserInfoAsync(client);
-            if (!(result is OkObjectResult))
+            if (result is OkObjectResult)
             {
-                // If we can't get user info, the token is probably invalid. Clear it from config.
-                config!.SeedrToken = null;
-                Plugin.Instance!.SaveConfiguration();
-                return BadRequest(new { message = "Invalid Seedr token, please log in again." });
+                seedrccClient = client;
+                return result;
             }
-            seedrccClient = client;
-            return result;
+            
+            // If we can't get user info, the token is probably invalid. Clear it.
+            Plugin.Instance!.SaveSeedrToken(null);
         }
-        else
+
+        // Token didn't work or isn't available. Check if credentials file exists!
+        var savedCreds = Plugin.Instance!.LoadCredentials();
+        if (savedCreds != null)
         {
-            return Ok(new
+            try
             {
-                loggedIn = false,
-                username = (string?)null,
-                storage = new { totalBytes = 0L, usedBytes = 0L }
-            });
+                var client = await SeedrClient.FromPasswordAsync(savedCreds.Value.username, savedCreds.Value.password, onRefreshSeedrToken, _httpClientFactory.CreateClient());
+                if (client != null)
+                {
+                    seedrccClient = client;
+                    var token = seedrccClient.Token;
+                    onRefreshSeedrToken(token); // Save the new token
+                    return await getSeedrUserInfoAsync(seedrccClient);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to login to Seedr with saved credentials.");
+            }
         }
+
+        return Ok(new
+        {
+            loggedIn = false,
+            username = (string?)null,
+            storage = new { totalBytes = 0L, usedBytes = 0L }
+        });
     }
 
     private async Task<IActionResult> getSeedrUserInfoAsync(SeedrClient client)
@@ -115,16 +134,12 @@ public class JellySeedrController : ControllerBase
 
     private void onRefreshSeedrToken(Token newToken)
     {
-        if (config != null)
-        {
-            config.SeedrToken = newToken.ToBase64();
-            Plugin.Instance!.SaveConfiguration();
-        }
+        Plugin.Instance!.SaveSeedrToken(newToken.ToBase64());
     }
 
     [HttpPost]
     [Route("login")]
-    public IActionResult SeedrLogin([FromForm] string username, [FromForm] string password)
+    public IActionResult SeedrLogin([FromForm] string username, [FromForm] string password, [FromForm] string? saveCredentials = null)
     {
         if (string.IsNullOrEmpty(password))
         {
@@ -140,7 +155,18 @@ public class JellySeedrController : ControllerBase
             }
             seedrccClient = result;
             var token = seedrccClient.Token;
-            onRefreshSeedrToken(token); // Persist the token in config
+            onRefreshSeedrToken(token); // Persist the token
+            
+            bool shouldSave = saveCredentials == "true" || saveCredentials == "on" || saveCredentials == "1";
+            if (shouldSave)
+            {
+                Plugin.Instance!.SaveCredentials(username, password);
+            }
+            else
+            {
+                Plugin.Instance!.DeleteCredentials();
+            }
+
             return Ok(new { message = "Login successful" });
         }
         catch (AuthenticationException)
@@ -158,11 +184,8 @@ public class JellySeedrController : ControllerBase
     public IActionResult SeedrLogout()
     {
         seedrccClient = null;
-        if (config != null)
-        {
-            config.SeedrToken = null;
-            Plugin.Instance!.SaveConfiguration();
-        }
+        Plugin.Instance!.SaveSeedrToken(null);
+        Plugin.Instance!.DeleteCredentials();
         return Ok(new { message = "Logged out" });
     }
 

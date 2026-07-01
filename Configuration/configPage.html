@@ -66,7 +66,7 @@
                             <span id="seedr_status_text">checking...</span>
                             <span type="button" id="seedr_logout_btn" style="display:none;"
                                 class="mupTextLink">Logout</span>
-                            <div id="seedr_storage" style="display:none; margin-top:.25em;">Storage: <span
+                            <div id="seedr_storage" style="display:none; margin-top:.25em;">Storage Used: <span
                                     id="seedr_storage_text"></span></div>
                         </div>
 
@@ -75,6 +75,12 @@
                                 <input type="text" id="seedr_username" class="emby-input" placeholder="Username" />
                                 <input type="password" id="seedr_password" class="emby-input" placeholder="Password"
                                     style="margin-top: 20px;" />
+                                <div class="checkboxContainer checkboxContainer-withcolor" style="margin-top: 15px;">
+                                    <label>
+                                        <input type="checkbox" is="emby-checkbox" id="seedr_save_credentials" />
+                                        <span>Save credentials securely on server</span>
+                                    </label>
+                                </div>
                                 <button is="emby-button" type="submit" id="seedr_login_btn"
                                     class="raised button-submit block emby-button"
                                     style="width: max-content; margin-top: 20px;">
@@ -338,13 +344,16 @@
                     Dashboard.showLoadingMsg('Logging in...');
                     const username = document.getElementById('seedr_username').value.trim();
                     const password = document.getElementById('seedr_password').value;
+                    const saveCredentials = document.getElementById('seedr_save_credentials').checked;
                     const form = new FormData();
                     form.set('username', username);
                     form.set('password', password);
+                    form.set('saveCredentials', saveCredentials);
                     const res = await fetchWithAuth('/jellyseedr/login', 'POST', form);
                     if (res.ok) {
                         document.getElementById('seedr_username').value = '';
                         document.getElementById('seedr_password').value = '';
+                        document.getElementById('seedr_save_credentials').checked = false;
                         Dashboard.hideLoadingMsg();
                         await updateSeedrUI();
                     }
