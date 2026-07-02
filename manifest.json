@@ -1,0 +1,11 @@
+[
+    {
+        "category": "General",
+        "guid": "50be6aa0-120a-48e1-9bf1-e95a867587e0",
+        "name": "JellySeedr",
+        "description": "Seedr.cc plugin for Jellyfin. Automatically downloads torrent on Seedr and downloads file to the server.",
+        "owner": "208.baansuri",
+        "overview": "jellyseedr",
+        "versions": []
+    }
+]

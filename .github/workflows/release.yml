@@ -1,0 +1,153 @@
+name: Release Plugin
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.release.target_commitish || 'main' }}
+
+    - name: Parse csproj configuration
+      id: parse_csproj
+      run: |
+        python3 -c '
+        import re
+        import os
+
+        with open("JellySeedr.csproj") as f:
+            content = f.read()
+
+        # Parse target framework (e.g. net8.0 -> 8.0.x)
+        tf_match = re.search(r"<TargetFramework>(.*?)</TargetFramework>", content)
+        if tf_match:
+            tf = tf_match.group(1)
+            dotnet_ver = tf.replace("net", "")
+            with open(os.environ["GITHUB_OUTPUT"], "a") as f_out:
+                f_out.write(f"dotnet_version={dotnet_ver}.x\n")
+            print(f"Parsed .NET version: {dotnet_ver}.x")
+        else:
+            with open(os.environ["GITHUB_OUTPUT"], "a") as f_out:
+                f_out.write("dotnet_version=8.0.x\n")
+
+        # Parse targetAbi from PackageReference (e.g. 10.9.9 -> 10.9.9.0)
+        abi_match = re.search(r"<PackageReference\s+Include=\"Jellyfin\.Controller\"\s+Version=\"([^\"]+)\"", content)
+        if abi_match:
+            abi = abi_match.group(1)
+            parts = abi.split(".")
+            while len(parts) < 4:
+                parts.append("0")
+            target_abi = ".".join(parts)
+            with open(os.environ["GITHUB_OUTPUT"], "a") as f_out:
+                f_out.write(f"target_abi={target_abi}\n")
+            print(f"Parsed targetAbi: {target_abi}")
+        else:
+            with open(os.environ["GITHUB_OUTPUT"], "a") as f_out:
+                f_out.write("target_abi=10.9.9.0\n")
+        '
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ steps.parse_csproj.outputs.dotnet_version }}
+
+    - name: Add NuGet GitHub Package Source
+      run: |
+        dotnet nuget add source https://nuget.pkg.github.com/208-baansuri/index.json --name github --username "${{ github.actor }}" --password "${{ secrets.PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}" --store-password-in-clear-text
+
+    - name: Publish project
+      run: |
+        dotnet publish -c Release
+
+    - name: Create release zip
+      run: |
+        zip -j plugin.zip bin/Release/net8.0/publish/JellySeedr.dll bin/Release/net8.0/publish/Seedrcc.dll
+
+    - name: Update manifest.json
+      env:
+        RELEASE_VERSION: ${{ github.event.release.tag_name }}
+        TAG_NAME: ${{ github.event.release.tag_name }}
+        RELEASE_BODY: ${{ github.event.release.body }}
+        TARGET_ABI: ${{ steps.parse_csproj.outputs.target_abi }}
+      run: |
+        python3 -c '
+        import json
+        import hashlib
+        import os
+
+        manifest_path = "manifest.json"
+        zip_path = "plugin.zip"
+
+        hash_md5 = hashlib.md5()
+        with open(zip_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        checksum = hash_md5.hexdigest()
+
+        with open(manifest_path, "r") as f:
+            manifest = json.load(f)
+
+        version = os.environ.get("RELEASE_VERSION", "1.0.0.0")
+        tag_name = os.environ.get("TAG_NAME", "v1.0.0.0")
+        repo = os.environ.get("GITHUB_REPOSITORY", "")
+        changelog = os.environ.get("RELEASE_BODY", "")
+        target_abi = os.environ.get("TARGET_ABI", "10.9.9.0")
+        if not changelog:
+            changelog = "Release " + version
+
+        version_clean = version.lstrip("v")
+        parts = version_clean.split(".")
+        while len(parts) < 4:
+            parts.append("0")
+        version_clean = ".".join(parts)
+
+        version_entry = {
+            "checksum": checksum,
+            "changelog": changelog,
+            "targetAbi": target_abi,
+            "sourceUrl": f"https://github.com/{repo}/releases/download/{tag_name}/plugin.zip",
+            "version": version_clean
+        }
+
+        plugin = None
+        for p in manifest:
+            if p.get("name") == "JellySeedr":
+                plugin = p
+                break
+        if plugin is None and len(manifest) > 0:
+            plugin = manifest[0]
+
+        if plugin is not None:
+            if "versions" not in plugin:
+                plugin["versions"] = []
+            plugin["versions"] = [v for v in plugin["versions"] if v.get("version") != version_clean]
+            plugin["versions"].insert(0, version_entry)
+
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=4)
+        '
+
+    - name: Commit and push manifest.json
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add manifest.json
+        git commit -m "chore: update manifest.json for release ${{ github.event.release.tag_name }}"
+        git push origin HEAD:${{ github.event.release.target_commitish || 'main' }}
+
+    - name: Upload zip to Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: plugin.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
