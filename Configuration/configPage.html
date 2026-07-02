@@ -514,9 +514,9 @@
                         const errorHtml = (isFailed && errorMsg) ? ' <span style="color:#ff5252; margin-left:0.5em; text-align: left;">(Error: ' + errorMsg + ')</span>' : '';
 
                         html += '<div class="listItem paperListItem" style="display:flex; align-items:center; justify-content:flex-start; padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); text-align: left; width: 100%; box-sizing: border-box;">' +
-                            '<div style="flex:1; display:flex; align-items:center; justify-content:flex-start; text-align: left; gap: 1em; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-right: 1em;">' +
-                            '<span style="font-weight: 500; text-align: left; min-width: fit-content;">' + name + '</span>' +
-                            '<span class="secondary" style="text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + detailsText + errorHtml + '</span>' +
+                            '<div style="flex:1; display:flex; flex-direction:column; text-align: left; gap: 4px; overflow: hidden; margin-right: 1em;">' +
+                            '<span style="font-weight: 500; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + name + '</span>' +
+                            '<span class="secondary" style="text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.9em;">' + detailsText + errorHtml + '</span>' +
                             '</div>';
 
                         if (showCross) {
