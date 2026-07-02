@@ -1,7 +1,7 @@
 (function () {
     const api = '/jellyseedr';
     const styleId = 'seedr-browser-style';
-    const state = { modal: null, tree: null, message: null, summary: null, actions: null, loading: null, selection: new Set(), nodes: new Map(), parents: new Map(), expanded: new Set() };
+    const state = { modal: null, tree: null, message: null, summary: null, actions: null, loading: null, selection: new Set(), nodes: new Map(), parents: new Map(), expanded: new Set(), fetchBtn: null, deleteBtn: null };
 
     const h = (x) => Object.assign({ Authorization: 'MediaBrowser Token=' + ApiClient.accessToken() }, x || {});
     const el = (tag, cls, text) => { const node = document.createElement(tag); if (cls) node.className = cls; if (text != null) node.textContent = text; return node; };
@@ -42,9 +42,13 @@
 
     const normFolder = (n) => ({ kind: 'folder', id: n.id || '', parentId: n.parentId || '', name: n.name || '', size: Number(n.size || 0), children: n.children || [], files: n.files || [], path: n.path || '' });
     const normFile = (n) => ({ kind: 'file', id: n.id || '', folderId: n.folderId || '', name: n.name || '', size: Number(n.size || 0), hash: n.hash || '', path: n.path || '' });
+    const normTorrent = (n) => ({ kind: 'torrent', id: n.id || '', name: n.name || '', size: Number(n.size || 0), progress: Number(n.progress || 0) });
 
     function reg(n, parent, kind) {
-        const node = kind === 'folder' ? normFolder(n) : normFile(n);
+        let node;
+        if (kind === 'torrent') node = normTorrent(n);
+        else if (kind === 'folder') node = normFolder(n);
+        else node = normFile(n);
         state.nodes.set(node.id, node);
         state.parents.set(node.id, parent);
         return node;
@@ -148,6 +152,17 @@
         if (!items.length) { state.summary.textContent = 'No items selected'; state.actions.hidden = true; return; }
         state.summary.textContent = `${items.length} selected • ${bytes(total)}`;
         state.actions.hidden = false;
+
+        const hasTorrents = items.some(n => n.kind === 'torrent');
+        const hasFilesOrFolders = items.some(n => n.kind === 'folder' || n.kind === 'file');
+
+        if (hasTorrents && !hasFilesOrFolders) {
+            if (state.fetchBtn) state.fetchBtn.style.display = 'none';
+            if (state.deleteBtn) state.deleteBtn.style.display = '';
+        } else {
+            if (state.fetchBtn) state.fetchBtn.style.display = '';
+            if (state.deleteBtn) state.deleteBtn.style.display = '';
+        }
     }
 
     function clearSelection() {
@@ -191,6 +206,24 @@
         return row;
     }
 
+    function torrentRow(torrent, depth) {
+        const n = reg(torrent, null, 'torrent');
+        const row = el('div', 'seedr-r seeder-torrent');
+        const tg = el('button', 'seedr-tg p'); tg.type = 'button'; tg.disabled = true;
+        const cb = getCheckBox(n.id);
+        const progressPct = n.progress ? ` (${n.progress}%)` : '';
+        const nameText = `[Torrent] ${n.name}${progressPct}`;
+        row.append(tg, cb, el('div', 'seedr-n', nameText), el('div', 'seedr-s', bytes(n.size)));
+        row.onclick = (e) => {
+            const input = row.querySelector('input[type="checkbox"]');
+            if (e.target !== tg && e.target !== cb && e.target !== input) {
+                input.checked = !input.checked;
+                input.dispatchEvent(new Event('change'));
+            }
+        }
+        return row;
+    }
+
     function folderRow(folder, depth, parent) {
         const n = reg(folder, parent, 'folder');
         const wrap = el('div', 'seedr-folder-wrapper');
@@ -217,6 +250,9 @@
     function render(root) {
         state.tree.replaceChildren();
         if (!root) return state.tree.appendChild(el('div', 'seedr-e', 'No files or folders found in Seedr.'));
+        if (root.torrents && root.torrents.length) {
+            root.torrents.forEach((t) => state.tree.appendChild(torrentRow(t, 0)));
+        }
         const r = normFolder(root);
         (r.children || []).forEach((f) => state.tree.appendChild(folderRow(f, 0, null)));
         (r.files || []).forEach((f) => state.tree.appendChild(fileRow(f, 0, null)));
@@ -295,6 +331,7 @@
         o.onclick = (e) => { if (e.target === o) close(); };
         document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
         state.modal = o; state.tree = t; state.message = m; state.summary = s; state.actions = a; state.loading = l;
+        state.fetchBtn = fb; state.deleteBtn = db;
     }
 
     function open() {

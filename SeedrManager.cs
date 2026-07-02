@@ -34,11 +34,17 @@ public class SeedrManager
             var items = NormalizeSelection(request);
             var deletedFiles = 0;
             var deletedFolders = 0;
+            var deletedTorrents = 0;
 
             var tasks = new List<Task>();
             foreach (var item in items)
             {
-                if (IsFolder(item.Kind))
+                if (IsTorrent(item.Kind))
+                {
+                    tasks.Add(client.DeleteTorrentAsync(item.Id));
+                    deletedTorrents++;
+                }
+                else if (IsFolder(item.Kind))
                 {
                     tasks.Add(client.DeleteFolderAsync(item.Id));
                     deletedFolders++;
@@ -52,7 +58,12 @@ public class SeedrManager
 
             await Task.WhenAll(tasks);
 
-            return (200, $"Deleted {deletedFiles} file(s) and {deletedFolders} folder(s).");
+            var msgParts = new List<string>();
+            if (deletedTorrents > 0) msgParts.Add($"{deletedTorrents} torrent(s)");
+            if (deletedFiles > 0) msgParts.Add($"{deletedFiles} file(s)");
+            if (deletedFolders > 0) msgParts.Add($"{deletedFolders} folder(s)");
+
+            return (200, $"Deleted {string.Join(", ", msgParts)}.");
         }
         catch (Exception ex)
         {
@@ -70,6 +81,10 @@ public class SeedrManager
 
             foreach (var item in items)
             {
+                if (IsTorrent(item.Kind))
+                {
+                    continue;
+                }
                 if (!IsFolder(item.Kind))
                 {
                     var fileUrl = await client.FetchFileAsync(item.Id);
@@ -209,6 +224,11 @@ public class SeedrManager
         return string.Equals(kind, "folder", StringComparison.OrdinalIgnoreCase);
     }
 
+    private bool IsTorrent(string? kind)
+    {
+        return string.Equals(kind, "torrent", StringComparison.OrdinalIgnoreCase);
+    }
+
     public async Task<SeedrFolderDto> LoadFolderNodeAsync(SeedrClient client, string folderId, string currentFolderName = "", string currentFolderPath = "")
     {
         var folderObject = new SeedrFolderDto();
@@ -219,6 +239,20 @@ public class SeedrManager
         folderObject.parentId = listing.Parent.ToString() ?? string.Empty;
         folderObject.name = currentFolderName;
         folderObject.path = currentFolderPath;
+
+        if (listing.Torrents != null)
+        {
+            foreach (var torrent in listing.Torrents)
+            {
+                folderObject.torrents.Add(new SeedrTorrentDto
+                {
+                    id = torrent.Id.ToString() ?? string.Empty,
+                    name = torrent.Name ?? string.Empty,
+                    size = torrent.Size,
+                    progress = torrent.Progress
+                });
+            }
+        }
 
         foreach (var file in listing.Files)
         {
@@ -663,6 +697,16 @@ public sealed class SeedrFolderDto
     public List<SeedrFolderDto> children { get; set; } = [];
 
     public List<SeedrFileDto> files { get; set; } = [];
+
+    public List<SeedrTorrentDto> torrents { get; set; } = [];
+}
+
+public sealed class SeedrTorrentDto
+{
+    public string id { get; set; } = string.Empty;
+    public string name { get; set; } = string.Empty;
+    public long size { get; set; }
+    public double progress { get; set; }
 }
 
 public sealed class SeedrFileDto
