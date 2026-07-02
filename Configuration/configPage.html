@@ -462,6 +462,7 @@
                         let name = '';
                         let detailsText = '';
                         let showCross = false;
+                        let showCancel = false;
 
                         const taskId = task.Id || task.id;
 
@@ -475,6 +476,10 @@
                         if (currentStatus === 2 || currentStatus === 3 || currentStatus === 4 ||
                             currentStatus === 'Completed' || currentStatus === 'Failed' || currentStatus === 'Cancelled') {
                             showCross = true;
+                        } else if (currentStatus === 1 || currentStatus === 'InProgress' || currentStatus === 'In Progress') {
+                            if (task.Type === 0 || task.type === 0 || task.Type === 'Torrent' || task.type === 'Torrent') {
+                                showCancel = true;
+                            }
                         }
 
                         const isCompleted = (currentStatus === 2 || currentStatus === 'Completed');
@@ -521,6 +526,12 @@
                                 '</button>';
                         }
 
+                        if (showCancel) {
+                            html += '<button type="button" class="paper-icon-button-light emby-button cancel-task-btn" data-task-id="' + (task.Id || task.id) + '" title="Cancel Task" style="background:transparent; border:none; color:inherit; cursor:pointer; padding: 5px; display: flex; align-items: center; justify-content: center; margin-left: auto; flex-shrink: 0;">' +
+                                '<span class="material-icons">cancel</span>' +
+                                '</button>';
+                        }
+
                         html += '</div>';
                     });
 
@@ -559,6 +570,22 @@
                 }
             }
 
+            async function cancelActiveTask(taskId) {
+                try {
+                    const form = new FormData();
+                    form.append('taskId', taskId);
+                    const res = await fetchWithAuth('/jellyseedr/tasks/cancel', 'POST', form);
+                    if (res.ok) {
+                        await loadActiveTasks();
+                    } else {
+                        const js = await res.json();
+                        alert(js.message || 'Failed to cancel task');
+                    }
+                } catch (e) {
+                    console.warn('Failed to cancel task', e);
+                }
+            }
+
             async function clearAllCompletedTasks() {
                 try {
                     const res = await fetchWithAuth('/jellyseedr/tasks/clear-completed', 'POST', null);
@@ -576,7 +603,7 @@
             function startTaskPolling() {
                 loadActiveTasks();
                 if (taskPollingInterval) clearInterval(taskPollingInterval);
-                taskPollingInterval = setInterval(loadActiveTasks, 3000);
+                taskPollingInterval = setInterval(loadActiveTasks, 1000);
             }
 
             function stopTaskPolling() {
@@ -616,12 +643,21 @@
                 const listContainer = document.getElementById('activeTasksList');
                 if (listContainer) {
                     listContainer.onclick = function (e) {
-                        const btn = e.target.closest('.remove-task-btn');
-                        if (btn) {
-                            const taskId = btn.getAttribute('data-task-id');
+                        const removeBtn = e.target.closest('.remove-task-btn');
+                        if (removeBtn) {
+                            const taskId = removeBtn.getAttribute('data-task-id');
                             if (taskId) {
                                 removeActiveTask(taskId);
                             }
+                            return;
+                        }
+                        const cancelBtn = e.target.closest('.cancel-task-btn');
+                        if (cancelBtn) {
+                            const taskId = cancelBtn.getAttribute('data-task-id');
+                            if (taskId) {
+                                cancelActiveTask(taskId);
+                            }
+                            return;
                         }
                     };
                 }

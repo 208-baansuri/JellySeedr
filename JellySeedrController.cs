@@ -385,6 +385,18 @@ public class JellySeedrController : ControllerBase
     }
 
     [HttpPost]
+    [Route("tasks/cancel")]
+    public async Task<IActionResult> CancelTask([FromForm] uint taskId)
+    {
+        var cancelled = await seedrManager.CancelTaskAsync(seedrccClient, taskId);
+        if (cancelled)
+        {
+            return Ok(new { message = "Task cancelled successfully" });
+        }
+        return NotFound(new { message = "Task not found or cannot be cancelled" });
+    }
+
+    [HttpPost]
     [Route("tasks/clear-completed")]
     public IActionResult ClearCompletedTasks()
     {

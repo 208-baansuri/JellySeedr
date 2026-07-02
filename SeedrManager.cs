@@ -351,7 +351,7 @@ public class SeedrManager
                 await Task.Delay(500);
             }
 
-            if (seedrFolder != null)
+            if (seedrFolder != null && task.Status == JellySeedrTaskStatus.Completed)
             {
                 var autoDownload = Plugin.Instance?.Configuration?.AutoDownload ?? true;
                 if (autoDownload)
@@ -535,7 +535,7 @@ public class SeedrManager
     {
         lock (ActiveTasks)
         {
-            var keysToRemove = ActiveTasks.Where(kvp => 
+            var keysToRemove = ActiveTasks.Where(kvp =>
                 kvp.Value.Status == JellySeedrTaskStatus.Completed ||
                 kvp.Value.Status == JellySeedrTaskStatus.Failed ||
                 kvp.Value.Status == JellySeedrTaskStatus.Cancelled
@@ -546,6 +546,43 @@ public class SeedrManager
                 ActiveTasks.Remove(key);
             }
         }
+    }
+
+    public async Task<bool> CancelTaskAsync(SeedrClient? client, uint taskId)
+    {
+        JellySeedrTask? task;
+        lock (ActiveTasks)
+        {
+            ActiveTasks.TryGetValue(taskId, out task);
+        }
+
+        if (task == null || task.Status != JellySeedrTaskStatus.InProgress || task.Type != JellySeedrTaskType.Torrent)
+        {
+            return false;
+        }
+
+        if (task.TorrentTask != null && client != null)
+        {
+            try
+            {
+                var result = await client.DeleteTorrentAsync(task.TorrentTask.TorrentId.ToString());
+                _logger?.LogInformation("Deleted torrent {TorrentId} from Seedr: {Success}", task.TorrentTask.TorrentId, result.Result);
+                if (result == null || !result.Result)
+                {
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Error deleting torrent {TorrentId} from Seedr: {Message}", task.TorrentTask.TorrentId, ex.Message);
+                return false;
+            }
+        }
+
+        task.Status = JellySeedrTaskStatus.Cancelled;
+        task.UpdatedAt = DateTime.UtcNow;
+
+        return true;
     }
 
     private JellySeedrTask CreateNewJellySeedrTask(JellySeedrTaskType type, object taskData)
