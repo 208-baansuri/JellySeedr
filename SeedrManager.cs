@@ -356,7 +356,7 @@ public class SeedrManager
                 var seedrTorrentTask = seedrContent.Torrents.FirstOrDefault(x => x.Id == torrentTask.TorrentId);
                 if (seedrTorrentTask == null)
                 {
-                    seedrFolder = seedrContent.Folders.FirstOrDefault(x => x.Name == torrentTask.TorrentName);
+                    seedrFolder = seedrContent.Folders.FirstOrDefault(x => x.Name.Trim() == torrentTask.TorrentName.Trim());
                     if (seedrFolder == null)
                     {
                         _logger?.LogWarning("Torrent task {TaskId} (TorrentId: {TorrentId}) is no longer in Seedr list and no completed folder with name '{TorrentName}' was found. Task cancelled.",
