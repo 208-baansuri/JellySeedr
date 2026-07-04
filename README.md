@@ -7,6 +7,12 @@ JellySeedr is a Jellyfin plugin that integrates with [Seedr.cc](https://www.seed
 - **Direct Uploads**: Paste magnet links, torrent URLs, or upload `.torrent` files directly from your browser.
 - **Embedded File Browser**: Open a visual dialog to browse your Seedr cloud storage directory tree, list active torrent downloads with progress, download selected files/folders to local libraries, and delete items from your Seedr account.
 
+## Installation
+
+1. Add `https://raw.githubusercontent.com/208-baansuri/JellySeedr/main/manifest.json` as a repository in Jellyfin
+2. Install latest `JellySeedr` plugin
+3. Reboot Jellyfin Server
+
 ## Dependencies
 
 This project depends on the `Seedrcc` NuGet package, which is hosted on GitHub Packages.
@@ -15,17 +21,3 @@ To build the project, you must register the NuGet source:
 ```bash
 dotnet nuget add source https://nuget.pkg.github.com/208-baansuri/index.json --name github
 ```
-
-## Installation & Build
-
-### Prerequisites
-- .NET SDK 8.0+
-- A Jellyfin server installation
-
-### Building
-1. Build the project using `dotnet`:
-   ```bash
-   dotnet publish
-   ```
-2. Copy the compiled DLL from `bin/Release/net8.0/publish/JellySeedr.dll` and `bin/Release/net8.0/publish/Seedrcc.dll` into your Jellyfin server plugins directory (e.g., `<Jellyfin_Data>/plugins/JellySeedr_1.0.0.0/`).
-3. Restart your Jellyfin server.
