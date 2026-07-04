@@ -147,7 +147,7 @@
                 pluginUniqueId: '50be6aa0-120a-48e1-9bf1-e95a867587e0'
             };
 
-            let libraryOptions;
+            var libraryOptions;
 
             async function fetchWithAuth(url, method, body) {
                 const reqInit = {
@@ -208,7 +208,7 @@
                 }
             }
 
-            let lastSavedExtensions = '';
+            var lastSavedExtensions = '';
 
             async function loadPluginSettings() {
                 try {
@@ -438,7 +438,7 @@
                 }
             });
 
-            let taskPollingInterval = null;
+            var taskPollingInterval = null;
 
             async function loadActiveTasks() {
                 try {
