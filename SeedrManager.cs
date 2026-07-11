@@ -93,10 +93,21 @@ public class SeedrManager
                 }
                 if (!IsFolder(item.Kind))
                 {
-                    var fileUrl = await client.FetchFileAsync(item.Id);
+                    // Catch any URL fetch errors and log them
+                    var sourceUrl = string.Empty;
+                    try
+                    {
+                        var fileUrl = await client.FetchFileAsync(item.Id);
+                        sourceUrl = fileUrl.Url ?? string.Empty;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogWarning(ex, "Failed to create download link for '{Name}'; skipping this file.", item.Name);
+                    }
+
                     var fileFetchTask = new JellySeedrFetchTask
                     {
-                        SourceUrl = fileUrl.Url ?? string.Empty,
+                        SourceUrl = sourceUrl,
                         SourceFileId = item.Id,
                         SourceFileName = item.Name,
                         SourceFilePath = item.Path,
@@ -572,32 +583,47 @@ public class SeedrManager
         await FetchFiles(client, selectionRequest, param.ClashResolution, fetchTasks, jellySeedrTasks, queueItem);
         await Task.WhenAll(fetchTasks);
 
-        var allCompleted = jellySeedrTasks.All(t => t.Status == JellySeedrTaskStatus.Completed);
+        var failedTasks = jellySeedrTasks.Where(t => t.Status != JellySeedrTaskStatus.Completed).ToList();
 
-        if (allCompleted)
+        if (failedTasks.Count == jellySeedrTasks.Count)
         {
-            var deleteAfterDownload = Plugin.Instance?.Configuration?.DeleteAfterDownload ?? true;
-            if (deleteAfterDownload)
-            {
-                queueItem.Stage = QueuedTorrentStage.CleaningUp;
-
-                var jellySeedrDeleteTask = new JellySeedrDeleteTask
-                {
-                    Id = seedrFolder.Id.ToString(),
-                    Path = seedrFolder.Fullname,
-                    Kind = "folder"
-                };
-
-                var newTask = CreateNewJellySeedrTask(JellySeedrTaskType.Delete, jellySeedrDeleteTask);
-                newTask.Status = JellySeedrTaskStatus.Pending;
-
-                await HandleDeleteTask(client, newTask);
-            }
-        }
-        else
-        {
+            // Nothing was fetched; keep the folder on seeder
             queueItem.Status = QueuedTorrentStatus.Failed;
-            queueItem.ErrorMessage = "Some files failed to download. The folder was kept on Seedr.";
+            queueItem.ErrorMessage = "All files failed to download. The folder was kept on Seedr.";
+            return;
+        }
+
+        if (failedTasks.Count > 0)
+        {
+            // Tolerate some failures; show the first few names in the UI, all of them in the log.
+            const int maxNamesInMessage = 3;
+            var failedNames = failedTasks.Select(t => t.FetchTask?.SourceFileName ?? "unknown").ToList();
+            var shownNames = string.Join(", ", failedNames.Take(maxNamesInMessage).Select(n => $"'{n}'"));
+            if (failedNames.Count > maxNamesInMessage)
+            {
+                shownNames += $" and {failedNames.Count - maxNamesInMessage} more";
+            }
+            queueItem.ErrorMessage = $"Skipped {failedTasks.Count} file(s) that could not be downloaded -- {shownNames}.";
+            _logger?.LogWarning("Queue item {QueueId}: {FailedCount} of {TotalCount} file(s) failed to download ({FailedFiles}); continuing with cleanup.",
+                queueItem.QueueId, failedTasks.Count, jellySeedrTasks.Count, string.Join(", ", failedNames));
+        }
+
+        var deleteAfterDownload = Plugin.Instance?.Configuration?.DeleteAfterDownload ?? true;
+        if (deleteAfterDownload)
+        {
+            queueItem.Stage = QueuedTorrentStage.CleaningUp;
+
+            var jellySeedrDeleteTask = new JellySeedrDeleteTask
+            {
+                Id = seedrFolder.Id.ToString(),
+                Path = seedrFolder.Fullname,
+                Kind = "folder"
+            };
+
+            var newTask = CreateNewJellySeedrTask(JellySeedrTaskType.Delete, jellySeedrDeleteTask);
+            newTask.Status = JellySeedrTaskStatus.Pending;
+
+            await HandleDeleteTask(client, newTask);
         }
     }
 
