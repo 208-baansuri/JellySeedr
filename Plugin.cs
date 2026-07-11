@@ -35,16 +35,29 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// </summary>
     public static Plugin? Instance { get; private set; }
 
+    private string? GetSubdirectoryFilePath(string fileName, bool createDirectory = false)
+    {
+        var baseDirectory = Path.GetDirectoryName(ConfigurationFilePath);
+        if (string.IsNullOrEmpty(baseDirectory)) return null;
+
+        var targetDirectory = Path.Combine(baseDirectory, "Jellyfin.Plugin.JellySeedr");
+        if (createDirectory && !Directory.Exists(targetDirectory))
+        {
+            Directory.CreateDirectory(targetDirectory);
+        }
+
+        return Path.Combine(targetDirectory, fileName);
+    }
+
     public string? GetSeedrToken()
     {
         try
         {
-            var directory = Path.GetDirectoryName(ConfigurationFilePath);
-            if (string.IsNullOrEmpty(directory)) return null;
-            var filePath = Path.Combine(directory, "token.key");
-            if (File.Exists(filePath))
+            var filePath = GetSubdirectoryFilePath("token.key");
+            if (filePath != null && File.Exists(filePath))
             {
-                return File.ReadAllText(filePath);
+                var cipherBytes = File.ReadAllBytes(filePath);
+                return Decrypt(cipherBytes);
             }
         }
         catch
@@ -58,13 +71,9 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
         try
         {
-            var directory = Path.GetDirectoryName(ConfigurationFilePath);
-            if (string.IsNullOrEmpty(directory)) return;
-            if (!Directory.Exists(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
-            var filePath = Path.Combine(directory, "token.key");
+            var filePath = GetSubdirectoryFilePath("token.key", createDirectory: true);
+            if (filePath == null) return;
+
             if (string.IsNullOrEmpty(token))
             {
                 if (File.Exists(filePath))
@@ -74,7 +83,8 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
             }
             else
             {
-                File.WriteAllText(filePath, token);
+                var cipherBytes = Encrypt(token);
+                File.WriteAllBytes(filePath, cipherBytes);
             }
         }
         catch
@@ -90,14 +100,9 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
         try
         {
-            var directory = Path.GetDirectoryName(ConfigurationFilePath);
-            if (string.IsNullOrEmpty(directory)) return;
-            if (!Directory.Exists(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
-            var filePath = Path.Combine(directory, "credentials.key");
-            
+            var filePath = GetSubdirectoryFilePath("credentials.key", createDirectory: true);
+            if (filePath == null) return;
+
             var plainText = $"{username}\n{password}";
             var cipherBytes = Encrypt(plainText);
             File.WriteAllBytes(filePath, cipherBytes);
@@ -112,17 +117,16 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
         try
         {
-            var directory = Path.GetDirectoryName(ConfigurationFilePath);
-            if (string.IsNullOrEmpty(directory)) return null;
-            var filePath = Path.Combine(directory, "credentials.key");
-            if (!File.Exists(filePath)) return null;
-
-            var cipherBytes = File.ReadAllBytes(filePath);
-            var plainText = Decrypt(cipherBytes);
-            var parts = plainText.Split('\n', 2);
-            if (parts.Length == 2)
+            var filePath = GetSubdirectoryFilePath("credentials.key");
+            if (filePath != null && File.Exists(filePath))
             {
-                return (parts[0], parts[1]);
+                var cipherBytes = File.ReadAllBytes(filePath);
+                var plainText = Decrypt(cipherBytes);
+                var parts = plainText.Split('\n', 2);
+                if (parts.Length == 2)
+                {
+                    return (parts[0], parts[1]);
+                }
             }
         }
         catch
@@ -136,10 +140,8 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     {
         try
         {
-            var directory = Path.GetDirectoryName(ConfigurationFilePath);
-            if (string.IsNullOrEmpty(directory)) return;
-            var filePath = Path.Combine(directory, "credentials.key");
-            if (File.Exists(filePath))
+            var filePath = GetSubdirectoryFilePath("credentials.key");
+            if (filePath != null && File.Exists(filePath))
             {
                 File.Delete(filePath);
             }

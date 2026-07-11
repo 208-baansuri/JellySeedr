@@ -36,6 +36,7 @@
             .seedr-tg{width:1.5rem;padding:0}
             .seedr-tg.p{visibility:hidden}
             .seedr-e{color:var(--secondary-text-color,rgba(255,255,255,.72));padding:.75rem .5rem}
+            .seedr-ar{stroke: var(--secondary-text-color,rgba(255,255,255,.72); fill: var(--secondary-text-color,rgba(255,255,255,.72)}
         `;
         document.head.appendChild(s);
     }
@@ -228,7 +229,7 @@
         const n = reg(folder, parent, 'folder');
         const wrap = el('div', 'seedr-folder-wrapper');
         const row = el('div', 'seedr-r seeder-folder');
-        const tg = el('button', 'seedr-tg'); tg.type = 'button';
+        const tg = el('button', 'seedr-tg seedr-ar'); tg.type = 'button';
         const isExpanded = state.expanded.has(n.id);
         tg.innerHTML = isExpanded ? explandLessIconHTML : explandMoreIconHTML;
         const cb = getCheckBox(n.id);
