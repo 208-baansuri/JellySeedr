@@ -41,4 +41,10 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public bool AutoDownload { get; set; } = true;
 
+    /// <summary>
+    /// Gets or sets how many queued torrents are processed at the same time.
+    /// Seedr free accounts only support 1 concurrent torrent transfer.
+    /// </summary>
+    public int MaxConcurrentTorrents { get; set; } = 1;
+
 }

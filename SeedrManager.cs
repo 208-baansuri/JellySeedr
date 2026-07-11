@@ -26,6 +26,12 @@ public class SeedrManager
     private Dictionary<uint, JellySeedrTask> ActiveTasks = new Dictionary<uint, JellySeedrTask>();
     private uint TaskIdCounter = 0;
 
+    private readonly List<QueuedTorrent> _torrentQueue = new();
+    private readonly object _queueLock = new();
+    private bool _queueProcessorRunning = false;
+    private SeedrClient? _queueClient;
+    private uint _queueIdCounter = 0;
+
     public async Task<(int code, string message)> DeleteSelection(SeedrClient client, SeedrSelectionRequest request)
     {
 
@@ -72,7 +78,7 @@ public class SeedrManager
     }
 
 
-    public async Task<(int code, string message)> FetchFiles(SeedrClient client, SeedrSelectionRequest request, FetchNameClashResolution clashResolution, List<Task>? tasksCollection = null, List<uint>? jellySeedrTaskCollection = null)
+    public async Task<(int code, string message)> FetchFiles(SeedrClient client, SeedrSelectionRequest request, FetchNameClashResolution clashResolution, List<Task>? tasksCollection = null, List<JellySeedrTask>? jellySeedrTaskCollection = null, QueuedTorrent? queueItem = null)
     {
         try
         {
@@ -101,12 +107,17 @@ public class SeedrManager
 
 
                     var newTask = CreateNewJellySeedrTask(JellySeedrTaskType.Fetch, fileFetchTask);
-                    lock (ActiveTasks)
+                    if (queueItem == null)
                     {
-                        ActiveTasks[newTask.Id] = newTask;
+                        // Manual fetches (file browser) are tracked in the Task Status panel;
+                        // queue-driven fetches are shown in the Torrent Queue panel instead.
+                        lock (ActiveTasks)
+                        {
+                            ActiveTasks[newTask.Id] = newTask;
+                        }
                     }
-                    jellySeedrTaskCollection?.Add(newTask.Id);
-                    var createdTask = FetchFileAsync(newTask, fileFetchTask, clashResolution);
+                    jellySeedrTaskCollection?.Add(newTask);
+                    var createdTask = FetchFileAsync(newTask, fileFetchTask, clashResolution, queueItem);
                     tasksCollection?.Add(createdTask);
 
                     fetchedFiles++;
@@ -123,7 +134,7 @@ public class SeedrManager
         }
     }
 
-    private async Task FetchFileAsync(JellySeedrTask task, JellySeedrFetchTask fetchTask, FetchNameClashResolution clashResolution = FetchNameClashResolution.Rename)
+    private async Task FetchFileAsync(JellySeedrTask task, JellySeedrFetchTask fetchTask, FetchNameClashResolution clashResolution = FetchNameClashResolution.Rename, QueuedTorrent? queueItem = null)
     {
         // Handle the fetched file URL as needed
         if (string.IsNullOrWhiteSpace(fetchTask.SourceUrl))
@@ -144,6 +155,11 @@ public class SeedrManager
                     case FetchNameClashResolution.Skip:
                         task.Status = JellySeedrTaskStatus.Completed;
                         task.UpdatedAt = DateTime.UtcNow;
+                        if (queueItem != null)
+                        {
+                            // Count skipped files as done so aggregate progress can reach 100%.
+                            queueItem.FetchCopiedBytes += fetchTask.FileSize;
+                        }
                         return;
                     case FetchNameClashResolution.Rename:
                         var directory = Path.GetDirectoryName(fetchTask.DestinationPath) ?? string.Empty;
@@ -162,7 +178,7 @@ public class SeedrManager
             }
 
             task.Status = JellySeedrTaskStatus.InProgress;
-            DownloadFile(task, fetchTask);
+            DownloadFile(task, fetchTask, queueItem);
 
         }
         catch (Exception ex)
@@ -176,7 +192,7 @@ public class SeedrManager
 
     }
 
-    private void DownloadFile(JellySeedrTask task, JellySeedrFetchTask fetchTask)
+    private void DownloadFile(JellySeedrTask task, JellySeedrFetchTask fetchTask, QueuedTorrent? queueItem = null)
     {
         try
         {
@@ -194,6 +210,10 @@ public class SeedrManager
                     {
                         fileStream.Write(buffer, 0, bytesRead);
                         fetchTask.BytesCopied += bytesRead;
+                        if (queueItem != null)
+                        {
+                            queueItem.FetchCopiedBytes += bytesRead;
+                        }
                         task.UpdatedAt = DateTime.UtcNow;
                     }
                 }
@@ -279,10 +299,17 @@ public class SeedrManager
         return folderObject;
     }
 
-    public async Task<(int code, string message)> HandleTorrentTask(SeedrClient client, SeedrTorrentAddParam param)
+    public async Task<(int code, string message)> HandleTorrentTask(SeedrClient client, SeedrTorrentAddParam param, QueuedTorrent queueItem)
     {
         try
         {
+            if (queueItem.Status == QueuedTorrentStatus.Cancelled)
+            {
+                return (200, "Torrent was cancelled before it started.");
+            }
+
+            queueItem.Stage = QueuedTorrentStage.Torrenting;
+
             AddTorrentResult? result = null;
             switch (param.InputType)
             {
@@ -309,6 +336,12 @@ public class SeedrManager
                 return (500, "Error adding torrent: Make sure url/magnet is valid and you have enough storage space. Also for free account only one concurrent torrent download is allowed.");
             }
 
+            queueItem.SeedrTorrentId = result.UserTorrentId ?? 0;
+            if (!string.IsNullOrWhiteSpace(result.Title))
+            {
+                queueItem.DisplayName = result.Title;
+            }
+
             var torrentTask = new JellySeedrTorrentTask
             {
                 TorrentId = result.UserTorrentId ?? 0,
@@ -317,16 +350,43 @@ public class SeedrManager
                 Progress = 0,
             };
 
+            // Queue-driven work is shown in the Torrent Queue panel, so the task is not
+            // registered in ActiveTasks (which backs the manual-downloads Task Status panel).
             var newTask = CreateNewJellySeedrTask(JellySeedrTaskType.Torrent, torrentTask);
             newTask.Status = JellySeedrTaskStatus.InProgress;
-            lock (ActiveTasks)
+
+            await HandleTorrentCompletion(client, newTask, param, queueItem);
+
+            // The queue item may already be Failed/Cancelled by the pipeline; map the task outcome otherwise.
+            if (queueItem.Status == QueuedTorrentStatus.Active)
             {
-                ActiveTasks[newTask.Id] = newTask;
+                switch (newTask.Status)
+                {
+                    case JellySeedrTaskStatus.Completed:
+                        queueItem.Status = QueuedTorrentStatus.Completed;
+                        break;
+                    case JellySeedrTaskStatus.Cancelled:
+                        queueItem.Status = QueuedTorrentStatus.Cancelled;
+                        queueItem.ErrorMessage ??= newTask.ErrorMessage;
+                        break;
+                    default:
+                        queueItem.Status = QueuedTorrentStatus.Failed;
+                        queueItem.ErrorMessage = newTask.ErrorMessage ?? "Torrent processing failed.";
+                        break;
+                }
             }
 
-            _ = HandleTorrentCompletion(client, newTask, param);
-
             return (200, $"Torrent added to Seedr: '{result.Title}'.");
+        }
+        catch (AuthenticationException ex)
+        {
+            _logger?.LogError(ex, "Seedr authentication failed while adding torrent from source '{Source}'", param.Source);
+            return (401, "Seedr session expired or invalid. Please log out and log in again.");
+        }
+        catch (ApiException ex)
+        {
+            _logger?.LogError(ex, "Seedr API rejected torrent from source '{Source}'. ErrorType: {ErrorType}, Code: {Code}", param.Source, ex.ErrorType, ex.Code);
+            return (500, DescribeSeedrApiError(ex));
         }
         catch (Exception ex)
         {
@@ -335,8 +395,27 @@ public class SeedrManager
         }
     }
 
+    private static string DescribeSeedrApiError(ApiException ex)
+    {
+        switch (ex.ErrorType)
+        {
+            case "not_enough_space_added_to_wishlist":
+            case "not_enough_space_wishlist_full":
+                return "Seedr rejected the torrent: not enough free space in your Seedr account. Delete leftover files/folders on Seedr and try again.";
+            case "queue_full_added_to_wishlist":
+                return "Seedr rejected the torrent: your Seedr transfer slot is already in use (free accounts allow one active torrent). Wait for or delete the active transfer on Seedr.";
+            case "invalid_torrent":
+                return "Seedr rejected the torrent: the torrent/magnet is invalid.";
+        }
 
-    private async Task HandleTorrentCompletion(SeedrClient client, JellySeedrTask task, SeedrTorrentAddParam param)
+        var details = ex.Message;
+        if (!string.IsNullOrEmpty(ex.ErrorType)) details += $" (result: {ex.ErrorType})";
+        if (ex.Code.HasValue) details += $" (code: {ex.Code})";
+        return $"Seedr rejected the torrent: {details}";
+    }
+
+
+    private async Task HandleTorrentCompletion(SeedrClient client, JellySeedrTask task, SeedrTorrentAddParam param, QueuedTorrent queueItem)
     {
         var torrentTask = task.TorrentTask;
         if (torrentTask == null)
@@ -350,14 +429,33 @@ public class SeedrManager
         try
         {
             Folder? seedrFolder = null;
+            var torrentMissingPolls = 0;
             while (task.Status == JellySeedrTaskStatus.InProgress)
             {
+                if (queueItem.Status == QueuedTorrentStatus.Cancelled)
+                {
+                    task.Status = JellySeedrTaskStatus.Cancelled;
+                    task.ErrorMessage = "Cancelled by user.";
+                    return;
+                }
+
                 var seedrContent = await client.ListContentsAsync();
                 var seedrTorrentTask = seedrContent.Torrents.FirstOrDefault(x => x.Id == torrentTask.TorrentId);
                 if (seedrTorrentTask == null)
                 {
                     seedrFolder = seedrContent.Folders.FirstOrDefault(x => x.Name.Trim() == torrentTask.TorrentName.Trim());
-                    if (seedrFolder == null)
+                    if (seedrFolder != null)
+                    {
+                        torrentTask.Progress = 100;
+                        queueItem.TorrentProgress = 100;
+                        task.Status = JellySeedrTaskStatus.Completed;
+                        break;
+                    }
+
+                    // The completed folder can appear a few polls after the torrent leaves the
+                    // transfer list; only give up once it stays missing.
+                    torrentMissingPolls++;
+                    if (torrentMissingPolls >= 3)
                     {
                         _logger?.LogWarning("Torrent task {TaskId} (TorrentId: {TorrentId}) is no longer in Seedr list and no completed folder with name '{TorrentName}' was found. Task cancelled.",
                             task.Id, torrentTask.TorrentId, torrentTask.TorrentName);
@@ -365,32 +463,35 @@ public class SeedrManager
                         task.ErrorMessage = "Torrent cancelled, it is not found in seedr.";
                         return;
                     }
-                    else
-                    {
-                        torrentTask.Progress = 100;
-                        task.Status = JellySeedrTaskStatus.Completed;
-                        break;
-                    }
                 }
-
-                if (torrentTask.TotalSize == -1)
+                else
                 {
-                    torrentTask.TotalSize = seedrTorrentTask.Size;
+                    torrentMissingPolls = 0;
+
+                    if (torrentTask.TotalSize == -1)
+                    {
+                        torrentTask.TotalSize = seedrTorrentTask.Size;
+                    }
+
+                    torrentTask.Progress = seedrTorrentTask.Progress;
+                    queueItem.TorrentProgress = seedrTorrentTask.Progress;
+                    queueItem.TorrentTotalBytes = seedrTorrentTask.Size;
+                    if (!string.IsNullOrWhiteSpace(seedrTorrentTask.Name))
+                    {
+                        queueItem.DisplayName = seedrTorrentTask.Name;
+                    }
+                    task.UpdatedAt = DateTime.Now;
                 }
 
-
-                torrentTask.Progress = seedrTorrentTask.Progress;
-                task.UpdatedAt = DateTime.Now;
-
-                await Task.Delay(500);
+                await Task.Delay(2000);
             }
 
-            if (seedrFolder != null && task.Status == JellySeedrTaskStatus.Completed)
+            if (seedrFolder != null && task.Status == JellySeedrTaskStatus.Completed && queueItem.Status != QueuedTorrentStatus.Cancelled)
             {
                 var autoDownload = Plugin.Instance?.Configuration?.AutoDownload ?? true;
                 if (autoDownload)
                 {
-                    await ScanAndFetchMatchingFilesAsync(client, seedrFolder, param);
+                    await ScanAndFetchMatchingFilesAsync(client, seedrFolder, param, queueItem);
                 }
             }
         }
@@ -402,8 +503,10 @@ public class SeedrManager
         }
     }
 
-    private async Task ScanAndFetchMatchingFilesAsync(SeedrClient client, Folder seedrFolder, SeedrTorrentAddParam param)
+    private async Task ScanAndFetchMatchingFilesAsync(SeedrClient client, Folder seedrFolder, SeedrTorrentAddParam param, QueuedTorrent queueItem)
     {
+        queueItem.Stage = QueuedTorrentStage.Fetching;
+
         var selectionRequest = new SeedrSelectionRequest
         {
             DestinationPath = param.DestinationPath
@@ -427,7 +530,7 @@ public class SeedrManager
                         var extensionWithPeriod = Path.GetExtension(fileName);
                         var extension = extensionWithPeriod.Length > 1 ? extensionWithPeriod.Substring(1) : string.Empty;
 
-                        if (param.DownloadExtensions.Contains(extension))
+                        if (param.DownloadExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
                         {
                             var fileSeedrPath = listing.Fullname + "/" + fileName;
 
@@ -453,29 +556,31 @@ public class SeedrManager
             }
         }
 
-        List<uint> jellySeedrTaskIds = [];
-        if (selectionRequest.Items.Count > 0)
-        {
-            List<Task> fetchTasks = [];
-            await FetchFiles(client, selectionRequest, param.ClashResolution, fetchTasks, jellySeedrTaskIds);
-            await Task.WhenAll(fetchTasks);
-        }
-        else
+        queueItem.FetchTotalBytes = selectionRequest.Items.Sum(i => i.Size);
+        queueItem.FetchCopiedBytes = 0;
+
+        if (selectionRequest.Items.Count == 0)
         {
             _logger?.LogWarning("No files matching the allowed download extensions were found in folder '{FolderName}'.", seedrFolder.Name);
+            // Keep the folder on Seedr so the user can inspect/fetch it manually via the file browser.
+            queueItem.ErrorMessage = "No files matched the allowed download extensions. The folder was kept on Seedr.";
+            return;
         }
 
-        bool allCompleted;
-        lock (ActiveTasks)
-        {
-            allCompleted = jellySeedrTaskIds.All(id => ActiveTasks.TryGetValue(id, out var t) && t.Status == JellySeedrTaskStatus.Completed);
-        }
+        List<JellySeedrTask> jellySeedrTasks = [];
+        List<Task> fetchTasks = [];
+        await FetchFiles(client, selectionRequest, param.ClashResolution, fetchTasks, jellySeedrTasks, queueItem);
+        await Task.WhenAll(fetchTasks);
+
+        var allCompleted = jellySeedrTasks.All(t => t.Status == JellySeedrTaskStatus.Completed);
 
         if (allCompleted)
         {
             var deleteAfterDownload = Plugin.Instance?.Configuration?.DeleteAfterDownload ?? true;
             if (deleteAfterDownload)
             {
+                queueItem.Stage = QueuedTorrentStage.CleaningUp;
+
                 var jellySeedrDeleteTask = new JellySeedrDeleteTask
                 {
                     Id = seedrFolder.Id.ToString(),
@@ -485,13 +590,14 @@ public class SeedrManager
 
                 var newTask = CreateNewJellySeedrTask(JellySeedrTaskType.Delete, jellySeedrDeleteTask);
                 newTask.Status = JellySeedrTaskStatus.Pending;
-                lock (ActiveTasks)
-                {
-                    ActiveTasks[newTask.Id] = newTask;
-                }
 
                 await HandleDeleteTask(client, newTask);
             }
+        }
+        else
+        {
+            queueItem.Status = QueuedTorrentStatus.Failed;
+            queueItem.ErrorMessage = "Some files failed to download. The folder was kept on Seedr.";
         }
     }
 
@@ -649,6 +755,261 @@ public class SeedrManager
         return task;
     }
 
+    public (int position, uint queueId, string message) EnqueueTorrent(SeedrClient client, SeedrTorrentAddParam param, string displayName)
+    {
+        _queueClient = client;
+        var queueId = Interlocked.Increment(ref _queueIdCounter);
+        var item = new QueuedTorrent
+        {
+            QueueId = queueId,
+            Param = param,
+            DisplayName = displayName,
+            QueuedAt = DateTime.UtcNow,
+            Status = QueuedTorrentStatus.Queued
+        };
+
+        int position;
+        lock (_queueLock)
+        {
+            _torrentQueue.Add(item);
+            position = _torrentQueue.Count(q => q.Status == QueuedTorrentStatus.Queued || q.Status == QueuedTorrentStatus.Active);
+        }
+
+        EnsureQueueProcessorRunning();
+
+        if (position == 1)
+            return (position, queueId, $"Torrent '{displayName}' is being processed.");
+        else
+            return (position, queueId, $"Torrent '{displayName}' queued at position #{position}.");
+    }
+
+    private void EnsureQueueProcessorRunning()
+    {
+        lock (_queueLock)
+        {
+            if (_queueProcessorRunning) return;
+            _queueProcessorRunning = true;
+        }
+        _ = Task.Run(ProcessQueueAsync);
+    }
+
+    private async Task ProcessQueueAsync()
+    {
+        var running = new List<Task>();
+        try
+        {
+            while (true)
+            {
+                var maxConcurrent = Math.Max(1, Plugin.Instance?.Configuration?.MaxConcurrentTorrents ?? 1);
+                running.RemoveAll(t => t.IsCompleted);
+
+                QueuedTorrent? nextItem = null;
+                lock (_queueLock)
+                {
+                    if (running.Count < maxConcurrent)
+                    {
+                        nextItem = _torrentQueue.FirstOrDefault(q => q.Status == QueuedTorrentStatus.Queued);
+                        if (nextItem != null)
+                        {
+                            nextItem.Status = QueuedTorrentStatus.Active;
+                        }
+                    }
+
+                    if (nextItem == null && running.Count == 0)
+                    {
+                        _queueProcessorRunning = false;
+                        return;
+                    }
+                }
+
+                if (nextItem != null)
+                {
+                    running.Add(ProcessQueueItemAsync(nextItem));
+                }
+                else
+                {
+                    // At capacity or nothing left queued: wait for a slot to free up, but wake
+                    // periodically so newly enqueued items (and config changes) get picked up.
+                    await Task.WhenAny(Task.WhenAny(running), Task.Delay(1000));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Queue processor encountered a fatal error.");
+            lock (_queueLock)
+            {
+                _queueProcessorRunning = false;
+            }
+        }
+    }
+
+    private async Task ProcessQueueItemAsync(QueuedTorrent item)
+    {
+        var client = _queueClient;
+        if (client == null)
+        {
+            item.Status = QueuedTorrentStatus.Failed;
+            item.ErrorMessage = "Not logged in to Seedr.";
+            return;
+        }
+
+        try
+        {
+            _logger?.LogInformation("Queue processor: starting torrent '{Name}' (QueueId: {QueueId})", item.DisplayName, item.QueueId);
+            var (code, message) = await HandleTorrentTask(client, item.Param, item);
+            if (code != 200 && item.Status == QueuedTorrentStatus.Active)
+            {
+                item.Status = QueuedTorrentStatus.Failed;
+                item.ErrorMessage = message;
+            }
+            _logger?.LogInformation("Queue processor: torrent '{Name}' finished with status {Status}.", item.DisplayName, item.Status);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Queue processor: error processing torrent '{Name}'", item.DisplayName);
+            item.Status = QueuedTorrentStatus.Failed;
+            item.ErrorMessage = ex.Message;
+        }
+        finally
+        {
+            // Never leave an item stuck in Active; it would block the queue forever.
+            if (item.Status == QueuedTorrentStatus.Active)
+            {
+                item.Status = QueuedTorrentStatus.Failed;
+                item.ErrorMessage ??= "Torrent processing ended unexpectedly.";
+            }
+        }
+    }
+
+    public IReadOnlyList<QueuedTorrent> GetQueue()
+    {
+        lock (_queueLock)
+        {
+            return _torrentQueue.ToList();
+        }
+    }
+
+    public async Task<bool> CancelQueueItemAsync(uint queueId)
+    {
+        QueuedTorrent? item;
+        lock (_queueLock)
+        {
+            item = _torrentQueue.FirstOrDefault(q => q.QueueId == queueId);
+            if (item == null) return false;
+
+            if (item.Status == QueuedTorrentStatus.Queued)
+            {
+                item.Status = QueuedTorrentStatus.Cancelled;
+                return true;
+            }
+        }
+
+        // Active items can only be cancelled while still torrenting; once files are being
+        // copied to the library, let the item finish.
+        if (item.Status == QueuedTorrentStatus.Active &&
+            (item.Stage == QueuedTorrentStage.Waiting || item.Stage == QueuedTorrentStage.Torrenting))
+        {
+            item.Status = QueuedTorrentStatus.Cancelled;
+
+            if (item.SeedrTorrentId > 0 && _queueClient != null)
+            {
+                try
+                {
+                    await _queueClient.DeleteTorrentAsync(item.SeedrTorrentId.ToString());
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex, "Failed to delete cancelled torrent {TorrentId} from Seedr.", item.SeedrTorrentId);
+                }
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool RemoveFromQueue(uint queueId)
+    {
+        lock (_queueLock)
+        {
+            var item = _torrentQueue.FirstOrDefault(q => q.QueueId == queueId);
+            if (item == null || item.Status == QueuedTorrentStatus.Active) return false;
+            return _torrentQueue.Remove(item);
+        }
+    }
+
+    public bool ReorderQueue(uint queueId, int newPosition)
+    {
+        lock (_queueLock)
+        {
+            var item = _torrentQueue.FirstOrDefault(q => q.QueueId == queueId);
+            if (item == null || item.Status != QueuedTorrentStatus.Queued) return false;
+
+            _torrentQueue.Remove(item);
+            var clampedPosition = Math.Max(0, Math.Min(newPosition, _torrentQueue.Count));
+            _torrentQueue.Insert(clampedPosition, item);
+            return true;
+        }
+    }
+
+    public void ClearCompletedQueueItems()
+    {
+        lock (_queueLock)
+        {
+            _torrentQueue.RemoveAll(q =>
+                q.Status == QueuedTorrentStatus.Completed ||
+                q.Status == QueuedTorrentStatus.Failed ||
+                q.Status == QueuedTorrentStatus.Cancelled);
+        }
+    }
+
+}
+
+public enum QueuedTorrentStatus
+{
+    Queued,
+    Active,
+    Completed,
+    Failed,
+    Cancelled
+}
+
+public enum QueuedTorrentStage
+{
+    Waiting,
+    Torrenting,
+    Fetching,
+    CleaningUp
+}
+
+public sealed class QueuedTorrent
+{
+    public uint QueueId { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public SeedrTorrentAddParam Param { get; set; } = new();
+
+    public string DisplayName { get; set; } = string.Empty;
+
+    public DateTime QueuedAt { get; set; }
+
+    public QueuedTorrentStatus Status { get; set; } = QueuedTorrentStatus.Queued;
+
+    public QueuedTorrentStage Stage { get; set; } = QueuedTorrentStage.Waiting;
+
+    public double TorrentProgress { get; set; }
+
+    public long TorrentTotalBytes { get; set; }
+
+    public long FetchTotalBytes { get; set; }
+
+    public long FetchCopiedBytes { get; set; }
+
+    public string? ErrorMessage { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public int SeedrTorrentId { get; set; }
 }
 
 public sealed class SeedrSelectionRequest

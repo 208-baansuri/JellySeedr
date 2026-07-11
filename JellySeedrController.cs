@@ -261,9 +261,25 @@ public class JellySeedrController : ControllerBase
                     return BadRequest(new { message = "Unable to determine input type. Provide a torrent file, a .torrent/http URL or a magnet link." });
             }
 
-            var (res, msg) = await seedrManager.HandleTorrentTask(seedrccClient, seedrTorrentAddParam);
+            string displayName;
+            if (type == SeedrInputType.MagnetLink && !string.IsNullOrEmpty(input))
+            {
+                var match = System.Text.RegularExpressions.Regex.Match(input, @"dn=([^&]+)");
+                displayName = match.Success
+                    ? System.Net.WebUtility.UrlDecode(match.Groups[1].Value)
+                    : "Magnet Link";
+            }
+            else if (type == SeedrInputType.TorrentFile)
+            {
+                displayName = torrentFile?.FileName ?? "torrent file";
+            }
+            else
+            {
+                displayName = input ?? "unknown";
+            }
 
-            return res == 200 ? Ok(new { message = msg }) : BadRequest(new { message = msg });
+            var (position, queueId, msg) = seedrManager.EnqueueTorrent(seedrccClient, seedrTorrentAddParam, displayName);
+            return Ok(new { message = msg, queueId, position });
         }
         catch (Exception ex)
         {
@@ -402,6 +418,57 @@ public class JellySeedrController : ControllerBase
     {
         seedrManager.ClearCompletedTasks();
         return Ok(new { message = "Completed tasks cleared successfully" });
+    }
+
+    [HttpGet]
+    [Route("queue")]
+    public IActionResult GetQueue()
+    {
+        return Ok(seedrManager.GetQueue());
+    }
+
+    [HttpPost]
+    [Route("queue/cancel")]
+    public async Task<IActionResult> CancelQueueItem([FromForm] uint queueId)
+    {
+        var cancelled = await seedrManager.CancelQueueItemAsync(queueId);
+        if (cancelled)
+        {
+            return Ok(new { message = "Item cancelled" });
+        }
+        return BadRequest(new { message = "Item not found or can no longer be cancelled" });
+    }
+
+    [HttpPost]
+    [Route("queue/remove")]
+    public IActionResult RemoveFromQueue([FromForm] uint queueId)
+    {
+        var removed = seedrManager.RemoveFromQueue(queueId);
+        if (removed)
+        {
+            return Ok(new { message = "Removed from queue" });
+        }
+        return BadRequest(new { message = "Item not found or is currently active" });
+    }
+
+    [HttpPost]
+    [Route("queue/reorder")]
+    public IActionResult ReorderQueue([FromForm] uint queueId, [FromForm] int newPosition)
+    {
+        var reordered = seedrManager.ReorderQueue(queueId, newPosition);
+        if (reordered)
+        {
+            return Ok(new { message = "Queue reordered" });
+        }
+        return BadRequest(new { message = "Item not found or cannot be reordered" });
+    }
+
+    [HttpPost]
+    [Route("queue/clear")]
+    public IActionResult ClearCompletedQueueItems()
+    {
+        seedrManager.ClearCompletedQueueItems();
+        return Ok(new { message = "Completed queue items cleared" });
     }
 
 

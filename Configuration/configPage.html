@@ -61,6 +61,14 @@
                                 <input type="text" id="downloadFileTypesInput" class="emby-input"
                                     placeholder="mp4 srt mkv" />
                             </div>
+
+                            <div class="inputContainer" style="margin-top: 15px;">
+                                <label for="maxConcurrentTorrentsInput" style="display: block; margin-bottom: 5px;">Parallel
+                                    Torrent Downloads</label>
+                                <input type="number" id="maxConcurrentTorrentsInput" min="1" class="emby-input" />
+                                <div class="fieldDescription">How many queued torrents are processed at the same time.
+                                    Seedr free accounts only support 1.</div>
+                            </div>
                         </div>
                         <div id="seedrStatus">
                             <span id="seedr_status_text">checking...</span>
@@ -121,10 +129,26 @@
                                 </div>
                                 <p id="seedr_message" style="color:green;"></p>
                             </form>
-                            <div id="activeTasksSection" style="margin-top: 30px; max-width: 54em">
+                            <div id="torrentQueueSection" style="margin-top: 30px; max-width: 54em; display: none;">
                                 <div
                                     style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
-                                    <h3 style="margin: 0;">Task Status</h3>
+                                    <h3 style="margin: 0;">Seedr Queue</h3>
+                                    <button type="button" id="clearQueueBtn" class="raised emby-button"
+                                        style="margin: 0; padding: 4px 10px; width: max-content; display: none; font-size: 0.9em;">Clear
+                                        Completed</button>
+                                </div>
+                                <div id="torrentQueueList" class="paperList">
+                                    <div class="listItem">
+                                        <div class="listItemBody">
+                                            <div class="listItemBodyText secondary">No items in queue</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="activeTasksSection" style="margin-top: 30px; max-width: 54em; display: none;">
+                                <div
+                                    style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+                                    <h3 style="margin: 0;">Manual Downloads</h3>
                                     <button type="button" id="clearAllTasksBtn" class="raised emby-button"
                                         style="margin: 0; padding: 4px 10px; width: max-content; display: none; font-size: 0.9em;">Clear
                                         Completed</button>
@@ -234,6 +258,11 @@
                         extensionsInput.value = extStr;
                         lastSavedExtensions = extStr;
                     }
+
+                    const maxConcurrentInput = document.getElementById('maxConcurrentTorrentsInput');
+                    if (maxConcurrentInput) {
+                        maxConcurrentInput.value = config.MaxConcurrentTorrents ?? 1;
+                    }
                 } catch (e) {
                     console.warn('Failed to load plugin settings', e);
                 }
@@ -251,9 +280,13 @@
                     const extArray = inputVal ? inputVal.split(/\s+/).filter(Boolean) : [];
                     const normalizedInput = extArray.join(' ');
 
+                    const maxConcurrentParsed = parseInt(document.getElementById('maxConcurrentTorrentsInput').value, 10);
+                    const maxConcurrentVal = Number.isNaN(maxConcurrentParsed) ? 1 : Math.max(1, maxConcurrentParsed);
+
                     if (config.DeleteAfterDownload === deleteVal &&
                         config.AutoDownload === autoVal &&
                         config.NameClashResolution === clashVal &&
+                        config.MaxConcurrentTorrents === maxConcurrentVal &&
                         lastSavedExtensions === normalizedInput) {
                         return;
                     }
@@ -262,6 +295,7 @@
                     config.AutoDownload = autoVal;
                     config.NameClashResolution = clashVal;
                     config.DownloadFileTypes = extArray;
+                    config.MaxConcurrentTorrents = maxConcurrentVal;
 
                     await ApiClient.updatePluginConfiguration(JellySeedrConfig.pluginUniqueId, config);
                     lastSavedExtensions = normalizedInput;
@@ -446,15 +480,19 @@
                     if (!res.ok) return;
                     const tasks = await res.json();
 
+                    const section = document.getElementById('activeTasksSection');
                     const listContainer = document.getElementById('activeTasksList');
-                    if (!listContainer) return;
+                    if (!listContainer || !section) return;
 
+                    // Only manual downloads (from the Seedr file browser) appear here;
+                    // hide the section entirely when there are none.
                     if (!tasks || tasks.length === 0) {
-                        listContainer.innerHTML = '<div class="listItem"><div class="listItemBody"><div class="listItemBodyText secondary">No active tasks</div></div></div>';
+                        section.style.display = 'none';
                         const clearBtn = document.getElementById('clearAllTasksBtn');
                         if (clearBtn) clearBtn.style.display = 'none';
                         return;
                     }
+                    section.style.display = '';
 
                     let html = '';
                     let hasClearable = false;
@@ -546,7 +584,7 @@
             }
 
             function formatBytes(bytes, decimals = 2) {
-                if (bytes === 0) return '0 Bytes';
+                if (!+bytes) return '0 Bytes';
                 const k = 1024;
                 const dm = decimals < 0 ? 0 : decimals;
                 const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
@@ -600,10 +638,181 @@
                 }
             }
 
+            async function loadTorrentQueue() {
+                try {
+                    const res = await fetchWithAuth('/jellyseedr/queue', 'GET');
+                    if (!res.ok) return;
+                    const queue = await res.json();
+                    if (!Array.isArray(queue)) return;
+
+                    const section = document.getElementById('torrentQueueSection');
+                    const listContainer = document.getElementById('torrentQueueList');
+                    const clearBtn = document.getElementById('clearQueueBtn');
+                    if (!listContainer || !section) return;
+
+                    if (queue.length === 0) {
+                        section.style.display = 'none';
+                        return;
+                    }
+                    section.style.display = '';
+
+                    // Indexes (within the raw queue array) of items that are still queued,
+                    // used so move up/down swaps with the adjacent *queued* item.
+                    const queuedIndices = [];
+                    queue.forEach((q, i) => {
+                        const s = q.Status ?? q.status;
+                        if (s === 0 || s === 'Queued') queuedIndices.push(i);
+                    });
+
+                    const statusMap = ['Queued', 'Active', 'Completed', 'Failed', 'Cancelled'];
+                    let html = '';
+                    let hasClearable = false;
+                    let queuePosition = 0;
+
+                    queue.forEach((item, index) => {
+                        const queueId = item.QueueId ?? item.queueId;
+                        const name = item.DisplayName ?? item.displayName ?? 'Unknown';
+                        const rawStatus = item.Status ?? item.status;
+                        const rawStage = item.Stage ?? item.stage ?? 0;
+                        let statusText = typeof rawStatus === 'number' ? (statusMap[rawStatus] || 'Unknown') : rawStatus;
+                        const errorMsg = item.ErrorMessage ?? item.errorMessage;
+
+                        const tp = item.TorrentProgress ?? item.torrentProgress ?? 0;
+                        const fb = item.FetchTotalBytes ?? item.fetchTotalBytes ?? 0;
+                        const fc = item.FetchCopiedBytes ?? item.fetchCopiedBytes ?? 0;
+
+                        const isQueued = (rawStatus === 0 || rawStatus === 'Queued');
+                        const isActive = (rawStatus === 1 || rawStatus === 'Active');
+                        const isCompleted = (rawStatus === 2 || rawStatus === 'Completed');
+                        const isFailed = (rawStatus === 3 || rawStatus === 'Failed');
+                        const isCancelled = (rawStatus === 4 || rawStatus === 'Cancelled');
+
+                        const isTorrenting = (rawStage === 1 || rawStage === 'Torrenting');
+                        const isFetching = (rawStage === 2 || rawStage === 'Fetching');
+                        const isCleaningUp = (rawStage === 3 || rawStage === 'CleaningUp');
+
+                        if (isQueued) queuePosition++;
+                        if (isCompleted || isFailed || isCancelled) hasClearable = true;
+
+                        let pct = 0;
+                        if (isActive) {
+                            if (isTorrenting) {
+                                const tb = item.TorrentTotalBytes ?? item.torrentTotalBytes ?? 0;
+                                const sizeStr = tb > 0 ? ' (' + formatBytes(tb) + ')' : '';
+                                pct = tp;
+                                statusText = 'Torrenting on Seedr: ' + parseFloat(tp).toFixed(1) + '%' + sizeStr;
+                            } else if (isFetching) {
+                                pct = fb > 0 ? (fc / fb * 100) : 0;
+                                statusText = 'Fetching to library: ' + pct.toFixed(1) + '% (' + formatBytes(fc) + ' / ' + formatBytes(fb) + ')';
+                            } else if (isCleaningUp) {
+                                statusText = 'Cleaning up on Seedr...';
+                            } else {
+                                statusText = 'Starting...';
+                            }
+                        } else if (isQueued) {
+                            statusText = 'Queued (#' + queuePosition + ')';
+                        }
+
+                        let statusColor = '';
+                        if (isActive || isCompleted) statusColor = 'color: #4CAF50;';
+                        else if (isFailed) statusColor = 'color: #ff5252;';
+                        else if (isCancelled) statusColor = 'color: #9e9e9e;';
+
+                        const errorHtml = (errorMsg && (isFailed || isCancelled || isCompleted))
+                            ? ' <span style="color:#ff5252;">(' + errorMsg + ')</span>' : '';
+
+                        let progressBarHtml = '';
+                        if (isActive && (isTorrenting || isFetching)) {
+                            progressBarHtml = '<div style="width: 100%; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; margin-top: 6px; overflow: hidden;">' +
+                                '<div style="width: ' + Math.min(100, Math.max(0, pct)) + '%; height: 100%; background: #4CAF50; border-radius: 2px;"></div>' +
+                                '</div>';
+                        }
+
+                        html += '<div class="listItem paperListItem" style="display:flex; align-items:center; justify-content:flex-start; padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.1); text-align: left; width: 100%; box-sizing: border-box;">' +
+                            '<div style="flex:1; display:flex; flex-direction:column; text-align: left; gap: 4px; overflow: hidden; margin-right: 1em;">' +
+                            '<span style="font-weight: 500; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' + name + '</span>' +
+                            '<span class="secondary" style="text-align: left; font-size: 0.9em; ' + statusColor + '">' + statusText + errorHtml + '</span>' +
+                            progressBarHtml +
+                            '</div>';
+
+                        if (isQueued) {
+                            const qpos = queuedIndices.indexOf(index);
+                            if (qpos > 0) {
+                                html += '<button type="button" class="paper-icon-button-light emby-button queue-move-btn" data-queue-id="' + queueId + '" data-new-position="' + queuedIndices[qpos - 1] + '" title="Move Up" style="background:transparent; border:none; color:inherit; cursor:pointer; padding: 5px; flex-shrink: 0;">' +
+                                    '<span class="material-icons">arrow_upward</span></button>';
+                            }
+                            if (qpos >= 0 && qpos < queuedIndices.length - 1) {
+                                html += '<button type="button" class="paper-icon-button-light emby-button queue-move-btn" data-queue-id="' + queueId + '" data-new-position="' + queuedIndices[qpos + 1] + '" title="Move Down" style="background:transparent; border:none; color:inherit; cursor:pointer; padding: 5px; flex-shrink: 0;">' +
+                                    '<span class="material-icons">arrow_downward</span></button>';
+                            }
+                        }
+
+                        if (isActive && (isTorrenting || rawStage === 0 || rawStage === 'Waiting')) {
+                            html += '<button type="button" class="paper-icon-button-light emby-button queue-cancel-btn" data-queue-id="' + queueId + '" title="Cancel" style="background:transparent; border:none; color:inherit; cursor:pointer; padding: 5px; flex-shrink: 0; margin-left: 4px;">' +
+                                '<span class="material-icons">cancel</span></button>';
+                        } else if (!isActive) {
+                            html += '<button type="button" class="paper-icon-button-light emby-button queue-remove-btn" data-queue-id="' + queueId + '" title="Remove" style="background:transparent; border:none; color:inherit; cursor:pointer; padding: 5px; flex-shrink: 0; margin-left: 4px;">' +
+                                '<span class="material-icons">close</span></button>';
+                        }
+
+                        html += '</div>';
+                    });
+
+                    listContainer.innerHTML = html;
+
+                    if (clearBtn) {
+                        clearBtn.style.display = hasClearable ? '' : 'none';
+                    }
+                } catch (e) {
+                    console.warn('Failed to load torrent queue', e);
+                }
+            }
+
+            async function postQueueAction(url, form) {
+                try {
+                    const res = await fetchWithAuth(url, 'POST', form);
+                    if (res.ok) {
+                        await loadTorrentQueue();
+                    } else {
+                        const js = await res.json();
+                        alert(js.message || 'Queue action failed');
+                    }
+                } catch (e) {
+                    console.warn('Queue action failed', e);
+                }
+            }
+
+            function cancelQueueItem(queueId) {
+                const form = new FormData();
+                form.append('queueId', queueId);
+                return postQueueAction('/jellyseedr/queue/cancel', form);
+            }
+
+            function removeFromQueue(queueId) {
+                const form = new FormData();
+                form.append('queueId', queueId);
+                return postQueueAction('/jellyseedr/queue/remove', form);
+            }
+
+            function reorderQueue(queueId, newPosition) {
+                const form = new FormData();
+                form.append('queueId', queueId);
+                form.append('newPosition', newPosition);
+                return postQueueAction('/jellyseedr/queue/reorder', form);
+            }
+
+            function clearCompletedQueueItems() {
+                return postQueueAction('/jellyseedr/queue/clear', null);
+            }
+
             function startTaskPolling() {
                 loadActiveTasks();
+                loadTorrentQueue();
                 if (taskPollingInterval) clearInterval(taskPollingInterval);
-                taskPollingInterval = setInterval(loadActiveTasks, 1000);
+                taskPollingInterval = setInterval(function () {
+                    loadActiveTasks();
+                    loadTorrentQueue();
+                }, 1000);
             }
 
             function stopTaskPolling() {
@@ -623,6 +832,7 @@
                 document.getElementById('autoDownloadCheckbox').addEventListener('change', savePluginSettings);
                 document.getElementById('nameClashResolutionSelect').addEventListener('change', savePluginSettings);
                 document.getElementById('downloadFileTypesInput').addEventListener('change', savePluginSettings);
+                document.getElementById('maxConcurrentTorrentsInput').addEventListener('change', savePluginSettings);
 
                 document.getElementById('seedrSettingsToggleBtn').onclick = function () {
                     const settingsBlock = document.getElementById('seedrSettingsBlock');
@@ -657,6 +867,38 @@
                             if (taskId) {
                                 cancelActiveTask(taskId);
                             }
+                            return;
+                        }
+                    };
+                }
+
+                const clearQueueBtn = document.getElementById('clearQueueBtn');
+                if (clearQueueBtn) {
+                    clearQueueBtn.onclick = function () {
+                        clearCompletedQueueItems();
+                    };
+                }
+
+                const queueList = document.getElementById('torrentQueueList');
+                if (queueList) {
+                    queueList.onclick = function (e) {
+                        const cancelQueueBtn = e.target.closest('.queue-cancel-btn');
+                        if (cancelQueueBtn) {
+                            const queueId = cancelQueueBtn.getAttribute('data-queue-id');
+                            if (queueId) cancelQueueItem(queueId);
+                            return;
+                        }
+                        const removeQueueBtn = e.target.closest('.queue-remove-btn');
+                        if (removeQueueBtn) {
+                            const queueId = removeQueueBtn.getAttribute('data-queue-id');
+                            if (queueId) removeFromQueue(queueId);
+                            return;
+                        }
+                        const moveBtn = e.target.closest('.queue-move-btn');
+                        if (moveBtn) {
+                            const queueId = moveBtn.getAttribute('data-queue-id');
+                            const newPosition = parseInt(moveBtn.getAttribute('data-new-position'), 10);
+                            if (queueId && !Number.isNaN(newPosition)) reorderQueue(queueId, newPosition);
                             return;
                         }
                     };
