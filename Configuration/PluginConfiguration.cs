@@ -42,9 +42,25 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool AutoDownload { get; set; } = true;
 
     /// <summary>
+    /// Gets or sets a value indicating whether downloaded files are placed in a subfolder
+    /// named after the torrent (destinationPath/TorrentName/files). Enabled by default.
+    /// </summary>
+    public bool UseSubfolderStructure { get; set; } = true;
+
+    /// <summary>
     /// Gets or sets how many queued torrents are processed at the same time.
     /// Seedr free accounts only support 1 concurrent torrent transfer.
     /// </summary>
     public int MaxConcurrentTorrents { get; set; } = 1;
+
+    /// <summary>
+    /// Gets or sets the secret token used to authenticate the mock Transmission API via HTTP Basic Auth (as password).
+    /// </summary>
+    public string TransmissionToken { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the filesystem path where torrents added via the mock Transmission API are downloaded.
+    /// </summary>
+    public string? TransmissionDownloadPath { get; set; }
 
 }

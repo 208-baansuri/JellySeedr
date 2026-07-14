@@ -179,6 +179,29 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         return sr.ReadToEnd();
     }
 
+    /// <summary>
+    /// Returns the current Transmission secret token, generating and persisting one if not yet set.
+    /// </summary>
+    public string GetOrCreateTransmissionToken()
+    {
+        if (string.IsNullOrEmpty(Configuration.TransmissionToken))
+        {
+            Configuration.TransmissionToken = Guid.NewGuid().ToString("N");
+            SaveConfiguration();
+        }
+        return Configuration.TransmissionToken;
+    }
+
+    /// <summary>
+    /// Generates a new Transmission secret token, persists it, and returns it.
+    /// </summary>
+    public string RegenerateTransmissionToken()
+    {
+        Configuration.TransmissionToken = Guid.NewGuid().ToString("N");
+        SaveConfiguration();
+        return Configuration.TransmissionToken;
+    }
+
     // <inheritdoc />
     public IEnumerable<PluginPageInfo> GetPages()
     {

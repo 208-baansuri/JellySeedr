@@ -36,7 +36,7 @@
             .seedr-tg{width:1.5rem;padding:0}
             .seedr-tg.p{visibility:hidden}
             .seedr-e{color:var(--secondary-text-color,rgba(255,255,255,.72));padding:.75rem .5rem}
-            .seedr-ar{stroke: var(--secondary-text-color,rgba(255,255,255,.72); fill: var(--secondary-text-color,rgba(255,255,255,.72)}
+            .seedr-ar{stroke: var(--secondary-text-color,rgba(255,255,255,.72)); fill: var(--secondary-text-color,rgba(255,255,255,.72))}
         `;
         document.head.appendChild(s);
     }

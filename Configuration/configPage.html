@@ -55,6 +55,14 @@
                                 </label>
                             </div>
 
+                            <div class="checkboxContainer checkboxContainer-withcolor" style="margin-top: 15px;">
+                                <label>
+                                    <input type="checkbox" is="emby-checkbox" id="useSubfolderStructureCheckbox" />
+                                    <span>Download files into a subdirectory (destinationPath/TorrentName/…)</span>
+                                </label>
+                                <div class="fieldDescription" style="margin-top: 4px;">When enabled, each torrent's files are placed in a folder named after the torrent inside the destination path.</div>
+                            </div>
+
                             <div class="inputContainer" style="margin-top: 15px;">
                                 <label for="downloadFileTypesInput" style="display: block; margin-bottom: 5px;">File
                                     Extensions (separated by space)</label>
@@ -63,11 +71,45 @@
                             </div>
 
                             <div class="inputContainer" style="margin-top: 15px;">
-                                <label for="maxConcurrentTorrentsInput" style="display: block; margin-bottom: 5px;">Parallel
+                                <label for="maxConcurrentTorrentsInput"
+                                    style="display: block; margin-bottom: 5px;">Parallel
                                     Torrent Downloads</label>
                                 <input type="number" id="maxConcurrentTorrentsInput" min="1" class="emby-input" />
                                 <div class="fieldDescription">How many queued torrents are processed at the same time.
                                     Seedr free accounts only support 1.</div>
+                            </div>
+
+                            <hr style="margin: 20px 0; border-color: rgba(255,255,255,0.1);" />
+                            <h3 style="margin-top: 0; margin-bottom: 12px;">Mock Transmission API</h3>
+                            <div class="fieldDescription" style="margin-bottom: 12px;">
+                                Exposes a Transmission-compatible RPC endpoint at
+                                <code id="transmissionRpcUrl"
+                                    style="font-size:0.85em; word-break:break-all;"></code><br />
+                                Use this URL in Sonarr / Radarr download client settings (Transmission type).
+                            </div>
+
+                            <div class="inputContainer" style="margin-top: 15px;">
+                                <label for="transmissionDownloadPathInput"
+                                    style="display: block; margin-bottom: 5px;">Download Path</label>
+                                <input type="text" id="transmissionDownloadPathInput" class="emby-input"
+                                    placeholder="/media/downloads" />
+                                <div class="fieldDescription">Filesystem path where torrents added via Mock Transmission
+                                    are downloaded. Must be set before torrents can be added.</div>
+                            </div>
+
+                            <div class="inputContainer" style="margin-top: 15px;">
+                                <label style="display: block; margin-bottom: 5px;">Token (HTTP Basic Auth
+                                    password)</label>
+                                <div style="display: flex; gap: 0.5em; align-items: center;">
+                                    <input type="text" id="transmissionTokenDisplay" class="emby-input" readonly
+                                        style="flex:1; font-family: monospace; font-size: 0.9em;" />
+                                    <button type="button" id="transmissionTokenCopyBtn" class="raised emby-button"
+                                        style="width: max-content; white-space: nowrap;">Copy</button>
+                                    <button type="button" id="transmissionTokenRegenBtn" class="raised emby-button"
+                                        style="width: max-content; white-space: nowrap;">Regenerate</button>
+                                </div>
+                                <div class="fieldDescription">Enter this as the password in your Arr app's Transmission
+                                    download client settings. Username can be anything.</div>
                             </div>
                         </div>
                         <div id="seedrStatus">
@@ -240,6 +282,7 @@
 
                     document.getElementById('deleteAfterDownloadCheckbox').checked = config.DeleteAfterDownload !== false;
                     document.getElementById('autoDownloadCheckbox').checked = config.AutoDownload !== false;
+                    document.getElementById('useSubfolderStructureCheckbox').checked = config.UseSubfolderStructure !== false;
 
                     const resolutionSelect = document.getElementById('nameClashResolutionSelect');
                     if (resolutionSelect) {
@@ -263,6 +306,22 @@
                     if (maxConcurrentInput) {
                         maxConcurrentInput.value = config.MaxConcurrentTorrents ?? 1;
                     }
+
+                    // Mock Transmission settings
+                    const txPathInput = document.getElementById('transmissionDownloadPathInput');
+                    if (txPathInput) {
+                        txPathInput.value = config.TransmissionDownloadPath || '';
+                    }
+
+                    const txTokenDisplay = document.getElementById('transmissionTokenDisplay');
+                    if (txTokenDisplay) {
+                        txTokenDisplay.value = config.TransmissionToken || '(will be generated on first use)';
+                    }
+
+                    const txRpcUrl = document.getElementById('transmissionRpcUrl');
+                    if (txRpcUrl) {
+                        txRpcUrl.textContent = window.location.origin + '/jellyseedr/mocktransmission/rpc';
+                    }
                 } catch (e) {
                     console.warn('Failed to load plugin settings', e);
                 }
@@ -274,6 +333,7 @@
 
                     const deleteVal = document.getElementById('deleteAfterDownloadCheckbox').checked;
                     const autoVal = document.getElementById('autoDownloadCheckbox').checked;
+                    const subfolderVal = document.getElementById('useSubfolderStructureCheckbox').checked;
                     const clashVal = document.getElementById('nameClashResolutionSelect').value;
                     const inputVal = document.getElementById('downloadFileTypesInput').value.trim();
 
@@ -283,19 +343,25 @@
                     const maxConcurrentParsed = parseInt(document.getElementById('maxConcurrentTorrentsInput').value, 10);
                     const maxConcurrentVal = Number.isNaN(maxConcurrentParsed) ? 1 : Math.max(1, maxConcurrentParsed);
 
+                    const txDownloadPath = (document.getElementById('transmissionDownloadPathInput')?.value || '').trim();
+
                     if (config.DeleteAfterDownload === deleteVal &&
                         config.AutoDownload === autoVal &&
+                        config.UseSubfolderStructure === subfolderVal &&
                         config.NameClashResolution === clashVal &&
                         config.MaxConcurrentTorrents === maxConcurrentVal &&
-                        lastSavedExtensions === normalizedInput) {
+                        lastSavedExtensions === normalizedInput &&
+                        (config.TransmissionDownloadPath || '') === txDownloadPath) {
                         return;
                     }
 
                     config.DeleteAfterDownload = deleteVal;
                     config.AutoDownload = autoVal;
+                    config.UseSubfolderStructure = subfolderVal;
                     config.NameClashResolution = clashVal;
                     config.DownloadFileTypes = extArray;
                     config.MaxConcurrentTorrents = maxConcurrentVal;
+                    config.TransmissionDownloadPath = txDownloadPath || null;
 
                     await ApiClient.updatePluginConfiguration(JellySeedrConfig.pluginUniqueId, config);
                     lastSavedExtensions = normalizedInput;
@@ -830,9 +896,39 @@
                 // Bind settings change listeners
                 document.getElementById('deleteAfterDownloadCheckbox').addEventListener('change', savePluginSettings);
                 document.getElementById('autoDownloadCheckbox').addEventListener('change', savePluginSettings);
+                document.getElementById('useSubfolderStructureCheckbox').addEventListener('change', savePluginSettings);
                 document.getElementById('nameClashResolutionSelect').addEventListener('change', savePluginSettings);
                 document.getElementById('downloadFileTypesInput').addEventListener('change', savePluginSettings);
                 document.getElementById('maxConcurrentTorrentsInput').addEventListener('change', savePluginSettings);
+                document.getElementById('transmissionDownloadPathInput').addEventListener('change', savePluginSettings);
+
+                // Mock Transmission — copy token button
+                document.getElementById('transmissionTokenCopyBtn').addEventListener('click', function () {
+                    const tokenInput = document.getElementById('transmissionTokenDisplay');
+                    if (tokenInput && tokenInput.value) {
+                        navigator.clipboard.writeText(tokenInput.value).catch(function () {
+                            tokenInput.select();
+                            document.execCommand('copy');
+                        });
+                    }
+                });
+
+                // Mock Transmission — regenerate token button
+                document.getElementById('transmissionTokenRegenBtn').addEventListener('click', async function () {
+                    try {
+                        const res = await fetchWithAuth('/jellyseedr/transmission-token/regenerate', 'POST', null);
+                        if (res.ok) {
+                            const js = await res.json();
+                            document.getElementById('transmissionTokenDisplay').value = js.token;
+                        } else {
+                            const js = await res.json();
+                            alert(js.message || 'Failed to regenerate token');
+                        }
+                    } catch (e) {
+                        console.warn('Failed to regenerate Transmission token', e);
+                        alert('Failed to regenerate token: ' + e.message);
+                    }
+                });
 
                 document.getElementById('seedrSettingsToggleBtn').onclick = function () {
                     const settingsBlock = document.getElementById('seedrSettingsBlock');
