@@ -89,17 +89,17 @@ public class SeedrManager
 
             foreach (var item in items)
             {
-                if (IsTorrent(item.Kind))      { tasks.Add(client.DeleteTorrentAsync(item.Id)); torrents++; }
-                else if (IsFolder(item.Kind))  { tasks.Add(client.DeleteFolderAsync(item.Id));  folders++; }
-                else                           { tasks.Add(client.DeleteFileAsync(item.Id));    files++; }
+                if (IsTorrent(item.Kind)) { tasks.Add(client.DeleteTorrentAsync(item.Id)); torrents++; }
+                else if (IsFolder(item.Kind)) { tasks.Add(client.DeleteFolderAsync(item.Id)); folders++; }
+                else { tasks.Add(client.DeleteFileAsync(item.Id)); files++; }
             }
 
             await Task.WhenAll(tasks);
 
             var parts = new List<string>();
             if (torrents > 0) parts.Add($"{torrents} torrent(s)");
-            if (files > 0)    parts.Add($"{files} file(s)");
-            if (folders > 0)  parts.Add($"{folders} folder(s)");
+            if (files > 0) parts.Add($"{files} file(s)");
+            if (folders > 0) parts.Add($"{folders} folder(s)");
             return (200, $"Deleted {string.Join(", ", parts)}.");
         }
         catch (Exception ex) { return (400, ex.Message); }
@@ -264,8 +264,10 @@ public class SeedrManager
         foreach (var f in listing.Files)
             folderObject.files.Add(new SeedrFileDto
             {
-                id = f.FolderFileId.ToString(), folderId = folderObject.id,
-                name = f.Name ?? string.Empty, size = f.Size,
+                id = f.FolderFileId.ToString(),
+                folderId = folderObject.id,
+                name = f.Name ?? string.Empty,
+                size = f.Size,
                 hash = f.Hash ?? string.Empty,
                 path = currentFolderPath + "/" + (f.Name ?? string.Empty)
             });
@@ -294,9 +296,9 @@ public class SeedrManager
 
             AddTorrentResult? result = param.InputType switch
             {
-                SeedrInputType.TorrentFile  => await client.AddTorrentAsync(torrentBytes: param.TorrentBytes),
-                SeedrInputType.TorrentUrl   => await client.AddTorrentAsync(torrentFile: param.Source),
-                SeedrInputType.MagnetLink   => await client.AddTorrentAsync(magnetLink: param.Source),
+                SeedrInputType.TorrentFile => await client.AddTorrentAsync(torrentBytes: param.TorrentBytes),
+                SeedrInputType.TorrentUrl => await client.AddTorrentAsync(torrentFile: param.Source),
+                SeedrInputType.MagnetLink => await client.AddTorrentAsync(magnetLink: param.Source),
                 _ => null
             };
 
@@ -375,40 +377,48 @@ public class SeedrManager
                     return;
                 }
 
-                var content = await client.ListContentsAsync();
-                var activeTorrent = content.Torrents.FirstOrDefault(x => x.Id == torrentTask.TorrentId);
-
-                if (activeTorrent == null)
+                try
                 {
-                    seedrFolder = content.Folders.FirstOrDefault(x => x.Name.Trim() == torrentTask.TorrentName.Trim());
-                    if (seedrFolder != null)
-                    {
-                        torrentTask.Progress = 100;
-                        queueItem.TorrentProgress = 100;
-                        task.Status = JellySeedrTaskStatus.Completed;
-                        break;
-                    }
+                    var content = await client.ListContentsAsync();
+                    var activeTorrent = content.Torrents.FirstOrDefault(x => x.Id == torrentTask.TorrentId);
 
-                    // The folder may appear a few polls after the torrent leaves the transfer list.
-                    if (++missingPolls >= 3)
+                    if (activeTorrent == null)
                     {
-                        var msg = $"Torrent no longer in Seedr and no completed folder found (name='{torrentTask.TorrentName}').";
-                        _logger?.LogWarning(msg);
-                        task.Status = JellySeedrTaskStatus.Cancelled;
-                        task.ErrorMessage = msg;
-                        queueItem.Status = QueuedTorrentStatus.Cancelled;
-                        queueItem.ErrorMessage = msg;
-                        return;
+                        seedrFolder = content.Folders.FirstOrDefault(x => x.Name.Trim() == torrentTask.TorrentName.Trim());
+                        if (seedrFolder != null)
+                        {
+                            torrentTask.Progress = 100;
+                            queueItem.TorrentProgress = 100;
+                            task.Status = JellySeedrTaskStatus.Completed;
+                            break;
+                        }
+
+                        // The folder may appear a few polls after the torrent leaves the transfer list.
+                        if (++missingPolls >= 3)
+                        {
+                            var msg = $"Torrent no longer in Seedr and no completed folder found (name='{torrentTask.TorrentName}').";
+                            _logger?.LogWarning(msg);
+                            task.Status = JellySeedrTaskStatus.Cancelled;
+                            task.ErrorMessage = msg;
+                            queueItem.Status = QueuedTorrentStatus.Cancelled;
+                            queueItem.ErrorMessage = msg;
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        missingPolls = 0;
+                        if (torrentTask.TotalSize == -1) torrentTask.TotalSize = activeTorrent.Size;
+                        torrentTask.Progress = activeTorrent.Progress;
+                        queueItem.TorrentProgress = activeTorrent.Progress;
+                        queueItem.TorrentTotalBytes = activeTorrent.Size;
+                        task.UpdatedAt = DateTime.Now;
                     }
                 }
-                else
+                catch (NetworkException ex)
                 {
-                    missingPolls = 0;
-                    if (torrentTask.TotalSize == -1) torrentTask.TotalSize = activeTorrent.Size;
-                    torrentTask.Progress = activeTorrent.Progress;
-                    queueItem.TorrentProgress = activeTorrent.Progress;
-                    queueItem.TorrentTotalBytes = activeTorrent.Size;
-                    task.UpdatedAt = DateTime.Now;
+                    // Network issue or HttpClient timeout elapsed — skip this poll and retry after the delay.
+                    _logger?.LogWarning("Seedr poll network error for task {TaskId} ({Message}); retrying next cycle.", task.Id, ex.Message);
                 }
 
                 await Task.Delay(2000);
@@ -460,8 +470,10 @@ public class SeedrManager
                 }
                 selectionRequest.Items.Add(new SeedrSelectionItem
                 {
-                    Id = file.FolderFileId.ToString(), Kind = "file",
-                    Name = name, Size = file.Size,
+                    Id = file.FolderFileId.ToString(),
+                    Kind = "file",
+                    Name = name,
+                    Size = file.Size,
                     Path = listing.Fullname + "/" + name
                 });
             }
@@ -519,7 +531,9 @@ public class SeedrManager
             queueItem.Stage = QueuedTorrentStage.CleaningUp;
             var deleteTask = CreateTask(JellySeedrTaskType.Delete, new JellySeedrDeleteTask
             {
-                Id = seedrFolder.Id.ToString(), Path = seedrFolder.Fullname, Kind = "folder"
+                Id = seedrFolder.Id.ToString(),
+                Path = seedrFolder.Fullname,
+                Kind = "folder"
             });
             deleteTask.Status = JellySeedrTaskStatus.Pending;
             await HandleDeleteTask(client, deleteTask);
@@ -621,8 +635,11 @@ public class SeedrManager
         var queueId = Interlocked.Increment(ref _queueIdCounter);
         var item = new QueuedTorrent
         {
-            QueueId = queueId, Param = param, DisplayName = displayName,
-            QueuedAt = DateTime.UtcNow, Status = QueuedTorrentStatus.Queued
+            QueueId = queueId,
+            Param = param,
+            DisplayName = displayName,
+            QueuedAt = DateTime.UtcNow,
+            Status = QueuedTorrentStatus.Queued
         };
 
         int position;
@@ -793,8 +810,8 @@ public class SeedrManager
         switch (type)
         {
             case JellySeedrTaskType.Torrent: task.TorrentTask = (JellySeedrTorrentTask)taskData; break;
-            case JellySeedrTaskType.Fetch:   task.FetchTask   = (JellySeedrFetchTask)taskData;   break;
-            case JellySeedrTaskType.Delete:  task.DeleteTask  = (JellySeedrDeleteTask)taskData;  break;
+            case JellySeedrTaskType.Fetch: task.FetchTask = (JellySeedrFetchTask)taskData; break;
+            case JellySeedrTaskType.Delete: task.DeleteTask = (JellySeedrDeleteTask)taskData; break;
         }
         return task;
     }
@@ -814,7 +831,7 @@ public class SeedrManager
     private static List<SeedrSelectionItem> NormalizeSelection(SeedrSelectionRequest? request) =>
         (request?.Items ?? []).Where(i => !string.IsNullOrWhiteSpace(i.Id)).ToList();
 
-    private static bool IsFolder(string? kind)  => string.Equals(kind, "folder",  StringComparison.OrdinalIgnoreCase);
+    private static bool IsFolder(string? kind) => string.Equals(kind, "folder", StringComparison.OrdinalIgnoreCase);
     private static bool IsTorrent(string? kind) => string.Equals(kind, "torrent", StringComparison.OrdinalIgnoreCase);
 
     private static string DescribeSeedrApiError(ApiException ex) => ex.ErrorType switch
@@ -835,12 +852,12 @@ public class SeedrManager
 // Enums
 // =============================================================================
 
-public enum QueuedTorrentStatus  { Queued, Active, Completed, Failed, Cancelled }
-public enum QueuedTorrentStage   { Waiting, Torrenting, Fetching, CleaningUp }
+public enum QueuedTorrentStatus { Queued, Active, Completed, Failed, Cancelled }
+public enum QueuedTorrentStage { Waiting, Torrenting, Fetching, CleaningUp }
 public enum JellySeedrTaskStatus { Pending, InProgress, Completed, Failed, Cancelled }
-public enum JellySeedrTaskType   { Torrent, Fetch, Delete }
+public enum JellySeedrTaskType { Torrent, Fetch, Delete }
 public enum FetchNameClashResolution { Overwrite, Skip, Rename }
-public enum SeedrInputType       { Unknown, TorrentFile, TorrentUrl, MagnetLink }
+public enum SeedrInputType { Unknown, TorrentFile, TorrentUrl, MagnetLink }
 
 // =============================================================================
 // Data models

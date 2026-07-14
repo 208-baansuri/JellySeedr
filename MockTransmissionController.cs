@@ -48,7 +48,7 @@ public class MockTransmissionController : ControllerBase
     [HttpGet("rpc")]
     public async Task<IActionResult> Rpc()
     {
-            if (!ValidateBasicAuth(Request, _logger, out var authError))
+        if (!ValidateBasicAuth(Request, _logger, out var authError))
         {
             Response.Headers["WWW-Authenticate"] = "Basic realm=\"JellySeedr\"";
             return StatusCode(401, authError);
@@ -350,7 +350,7 @@ public class MockTransmissionController : ControllerBase
             ["rateDownload"] = 0,
             ["rateUpload"] = 0,
             ["uploadRatio"] = 0,   // meets seedRatioLimit of 0 → Radarr triggers cleanup
-            ["error"] = 0,
+            ["error"] = queue?.Status is QueuedTorrentStatus.Failed or QueuedTorrentStatus.Cancelled ? 3 : 0,
             ["errorString"] = queue?.ErrorMessage ?? string.Empty,
             ["secondsDownloading"] = secondsElapsed,
             ["secondsSeeding"] = isFinished ? secondsElapsed : 0,
