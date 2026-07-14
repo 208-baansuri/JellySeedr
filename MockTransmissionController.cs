@@ -180,6 +180,7 @@ public class MockTransmissionController : ControllerBase
             {
                 if (!_torrents.TryRemove(id, out var entry)) continue;
                 await _seedrManager.CancelQueueItemAsync(entry.QueueId);
+                _seedrManager.UntrackAndRemoveIfHidden(entry.QueueId);
 
                 if (deleteLocalData && !string.IsNullOrWhiteSpace(entry.DownloadPath) && !string.IsNullOrWhiteSpace(entry.Name))
                     DeleteLocalData(Path.Combine(entry.DownloadPath, entry.Name), entry.Name);

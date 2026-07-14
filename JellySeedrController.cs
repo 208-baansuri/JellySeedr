@@ -248,7 +248,7 @@ public class JellySeedrController : ControllerBase
     // -------------------------------------------------------------------------
 
     [HttpGet("queue")]
-    public IActionResult GetQueue() => Ok(_seedrManager.GetQueue());
+    public IActionResult GetQueue() => Ok(_seedrManager.GetQueue().Where(q => !q.IsHidden));
 
     [HttpPost("queue/cancel")]
     public async Task<IActionResult> CancelQueueItem([FromForm] uint queueId)

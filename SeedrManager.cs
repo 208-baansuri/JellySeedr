@@ -832,10 +832,44 @@ public class SeedrManager
         }
     }
 
+    public void UntrackAndRemoveIfHidden(uint queueId)
+    {
+        lock (_queueLock)
+        {
+            var item = _torrentQueue.FirstOrDefault(q => q.QueueId == queueId);
+            if (item != null)
+            {
+                if (item.IsHidden)
+                {
+                    _torrentQueue.Remove(item);
+                }
+                else
+                {
+                    item.AddedBy = ""; // No longer tracked by arr
+                }
+            }
+        }
+    }
+
     public void ClearCompletedQueueItems()
     {
         lock (_queueLock)
-            _torrentQueue.RemoveAll(q => q.Status is QueuedTorrentStatus.Completed or QueuedTorrentStatus.Failed or QueuedTorrentStatus.Cancelled);
+        {
+            foreach (var item in _torrentQueue.ToList())
+            {
+                if (item.Status is QueuedTorrentStatus.Completed or QueuedTorrentStatus.Failed or QueuedTorrentStatus.Cancelled)
+                {
+                    if (item.AddedBy == "radarr" || item.AddedBy == "sonarr")
+                    {
+                        item.IsHidden = true;
+                    }
+                    else
+                    {
+                        _torrentQueue.Remove(item);
+                    }
+                }
+            }
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -995,6 +1029,7 @@ public sealed class QueuedTorrent
     public DateTime QueuedAt { get; set; }
     public string AddedBy { get; set; } = string.Empty;
     public string HashString { get; set; } = string.Empty;
+    public bool IsHidden { get; set; } = false;
     public QueuedTorrentStatus Status { get; set; } = QueuedTorrentStatus.Queued;
     public QueuedTorrentStage Stage { get; set; } = QueuedTorrentStage.Waiting;
     public double TorrentProgress { get; set; }
