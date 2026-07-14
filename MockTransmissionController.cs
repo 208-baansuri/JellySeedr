@@ -110,13 +110,22 @@ public class MockTransmissionController : ControllerBase
         if (!TryBuildTorrentParam(args, config, downloadPath, out var param, out var displayName, out var parseError))
             return Ok(ErrorResponse("torrent-add", parseError, tag));
 
-        var (_, queueId, _) = _seedrManager.EnqueueTorrent(client, param, displayName);
+        string addedBy = "";
+        if (Request?.Headers != null && Request.Headers.TryGetValue("User-Agent", out var uaValues))
+        {
+            var ua = uaValues.ToString();
+            if (ua.Contains("Radarr", StringComparison.OrdinalIgnoreCase)) addedBy = "radarr";
+            else if (ua.Contains("Sonarr", StringComparison.OrdinalIgnoreCase)) addedBy = "sonarr";
+        }
 
-        var torrentId = System.Threading.Interlocked.Increment(ref _torrentIdCounter);
         var hashString = (param.InputType == SeedrInputType.TorrentFile
             ? GetInfoHash(param.TorrentBytes)
-            : ExtractMagnetHash(param.Source))
-            ?? queueId.ToString("x8");
+            : ExtractMagnetHash(param.Source));
+
+        var (_, queueId, _) = _seedrManager.EnqueueTorrent(client, param, displayName, addedBy, hashString ?? "");
+
+        var torrentId = System.Threading.Interlocked.Increment(ref _torrentIdCounter);
+        if (hashString == null) hashString = queueId.ToString("x8");
 
         _torrents[torrentId] = new MockTransmissionTorrent
         {

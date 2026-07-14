@@ -111,6 +111,56 @@
                                 <div class="fieldDescription">Enter this as the password in your Arr app's Transmission
                                     download client settings. Username can be anything.</div>
                             </div>
+
+                            <hr style="margin: 20px 0; border-color: rgba(255,255,255,0.1);" />
+                            <h3 style="margin-top: 0; margin-bottom: 12px;">Radarr Integration</h3>
+                            <div class="fieldDescription" style="margin-bottom: 12px;">
+                                Integrates directly with Radarr to handle failed downloads properly.
+                            </div>
+                            <div class="inputContainer" style="margin-top: 15px;">
+                                <label for="radarrUrlInput" style="display: block; margin-bottom: 5px;">Radarr URL</label>
+                                <input type="text" id="radarrUrlInput" class="emby-input" placeholder="http://localhost:7878" />
+                            </div>
+                            <div class="inputContainer" style="margin-top: 15px;">
+                                <label for="radarrApiKeyInput" style="display: block; margin-bottom: 5px;">Radarr API Key</label>
+                                <input type="password" id="radarrApiKeyInput" class="emby-input" placeholder="Your Radarr API Key" />
+                            </div>
+                            <div style="margin-top: 10px;">
+                                <button type="button" id="testRadarrBtn" class="raised emby-button" style="width: max-content;">Test Connection</button>
+                                <span id="radarrTestResult" style="margin-left: 10px;"></span>
+                            </div>
+                            <div class="checkboxContainer checkboxContainer-withcolor" style="margin-top: 15px;">
+                                <label>
+                                    <input type="checkbox" is="emby-checkbox" id="autoDeleteFailedRadarrDownloadsCheckbox" disabled />
+                                    <span>Automatically delete and blacklist failed downloads in Radarr</span>
+                                </label>
+                                <div class="fieldDescription" style="margin-top: 4px;">Enabled only if the connection test is successful.</div>
+                            </div>
+
+                            <hr style="margin: 20px 0; border-color: rgba(255,255,255,0.1);" />
+                            <h3 style="margin-top: 0; margin-bottom: 12px;">Sonarr Integration</h3>
+                            <div class="fieldDescription" style="margin-bottom: 12px;">
+                                Integrates directly with Sonarr to handle failed downloads properly.
+                            </div>
+                            <div class="inputContainer" style="margin-top: 15px;">
+                                <label for="sonarrUrlInput" style="display: block; margin-bottom: 5px;">Sonarr URL</label>
+                                <input type="text" id="sonarrUrlInput" class="emby-input" placeholder="http://localhost:8989" />
+                            </div>
+                            <div class="inputContainer" style="margin-top: 15px;">
+                                <label for="sonarrApiKeyInput" style="display: block; margin-bottom: 5px;">Sonarr API Key</label>
+                                <input type="password" id="sonarrApiKeyInput" class="emby-input" placeholder="Your Sonarr API Key" />
+                            </div>
+                            <div style="margin-top: 10px;">
+                                <button type="button" id="testSonarrBtn" class="raised emby-button" style="width: max-content;">Test Connection</button>
+                                <span id="sonarrTestResult" style="margin-left: 10px;"></span>
+                            </div>
+                            <div class="checkboxContainer checkboxContainer-withcolor" style="margin-top: 15px;">
+                                <label>
+                                    <input type="checkbox" is="emby-checkbox" id="autoDeleteFailedSonarrDownloadsCheckbox" disabled />
+                                    <span>Automatically delete and blacklist failed downloads in Sonarr</span>
+                                </label>
+                                <div class="fieldDescription" style="margin-top: 4px;">Enabled only if the connection test is successful.</div>
+                            </div>
                         </div>
                         <div id="seedrStatus">
                             <span id="seedr_status_text">checking...</span>
@@ -322,6 +372,25 @@
                     if (txRpcUrl) {
                         txRpcUrl.textContent = window.location.origin + '/jellyseedr/mocktransmission/rpc';
                     }
+
+                    // Arr Settings
+                    const radarrUrlInput = document.getElementById('radarrUrlInput');
+                    if (radarrUrlInput) radarrUrlInput.value = config.RadarrUrl || 'http://localhost:7878';
+                    const radarrApiKeyInput = document.getElementById('radarrApiKeyInput');
+                    if (radarrApiKeyInput) radarrApiKeyInput.value = config.RadarrApiKey || '';
+                    const autoDeleteRadarr = document.getElementById('autoDeleteFailedRadarrDownloadsCheckbox');
+                    if (autoDeleteRadarr) autoDeleteRadarr.checked = config.AutoDeleteFailedRadarrDownloads === true;
+
+                    const sonarrUrlInput = document.getElementById('sonarrUrlInput');
+                    if (sonarrUrlInput) sonarrUrlInput.value = config.SonarrUrl || 'http://localhost:8989';
+                    const sonarrApiKeyInput = document.getElementById('sonarrApiKeyInput');
+                    if (sonarrApiKeyInput) sonarrApiKeyInput.value = config.SonarrApiKey || '';
+                    const autoDeleteSonarr = document.getElementById('autoDeleteFailedSonarrDownloadsCheckbox');
+                    if (autoDeleteSonarr) autoDeleteSonarr.checked = config.AutoDeleteFailedSonarrDownloads === true;
+
+                    // If API key is present, enable checkbox initially (test must be run again to verify though)
+                    if (autoDeleteRadarr && config.RadarrApiKey) autoDeleteRadarr.disabled = false;
+                    if (autoDeleteSonarr && config.SonarrApiKey) autoDeleteSonarr.disabled = false;
                 } catch (e) {
                     console.warn('Failed to load plugin settings', e);
                 }
@@ -344,6 +413,14 @@
                     const maxConcurrentVal = Number.isNaN(maxConcurrentParsed) ? 1 : Math.max(1, maxConcurrentParsed);
 
                     const txDownloadPath = (document.getElementById('transmissionDownloadPathInput')?.value || '').trim();
+                    
+                    const radarrUrlVal = document.getElementById('radarrUrlInput')?.value.trim() || 'http://localhost:7878';
+                    const radarrApiKeyVal = document.getElementById('radarrApiKeyInput')?.value.trim() || '';
+                    const autoDeleteRadarrVal = document.getElementById('autoDeleteFailedRadarrDownloadsCheckbox')?.checked || false;
+
+                    const sonarrUrlVal = document.getElementById('sonarrUrlInput')?.value.trim() || 'http://localhost:8989';
+                    const sonarrApiKeyVal = document.getElementById('sonarrApiKeyInput')?.value.trim() || '';
+                    const autoDeleteSonarrVal = document.getElementById('autoDeleteFailedSonarrDownloadsCheckbox')?.checked || false;
 
                     if (config.DeleteAfterDownload === deleteVal &&
                         config.AutoDownload === autoVal &&
@@ -351,7 +428,13 @@
                         config.NameClashResolution === clashVal &&
                         config.MaxConcurrentTorrents === maxConcurrentVal &&
                         lastSavedExtensions === normalizedInput &&
-                        (config.TransmissionDownloadPath || '') === txDownloadPath) {
+                        (config.TransmissionDownloadPath || '') === txDownloadPath &&
+                        (config.RadarrUrl || 'http://localhost:7878') === radarrUrlVal &&
+                        (config.RadarrApiKey || '') === radarrApiKeyVal &&
+                        (config.AutoDeleteFailedRadarrDownloads || false) === autoDeleteRadarrVal &&
+                        (config.SonarrUrl || 'http://localhost:8989') === sonarrUrlVal &&
+                        (config.SonarrApiKey || '') === sonarrApiKeyVal &&
+                        (config.AutoDeleteFailedSonarrDownloads || false) === autoDeleteSonarrVal) {
                         return;
                     }
 
@@ -362,6 +445,14 @@
                     config.DownloadFileTypes = extArray;
                     config.MaxConcurrentTorrents = maxConcurrentVal;
                     config.TransmissionDownloadPath = txDownloadPath || null;
+
+                    config.RadarrUrl = radarrUrlVal;
+                    config.RadarrApiKey = radarrApiKeyVal;
+                    config.AutoDeleteFailedRadarrDownloads = autoDeleteRadarrVal;
+
+                    config.SonarrUrl = sonarrUrlVal;
+                    config.SonarrApiKey = sonarrApiKeyVal;
+                    config.AutoDeleteFailedSonarrDownloads = autoDeleteSonarrVal;
 
                     await ApiClient.updatePluginConfiguration(JellySeedrConfig.pluginUniqueId, config);
                     lastSavedExtensions = normalizedInput;
@@ -901,6 +992,57 @@
                 document.getElementById('downloadFileTypesInput').addEventListener('change', savePluginSettings);
                 document.getElementById('maxConcurrentTorrentsInput').addEventListener('change', savePluginSettings);
                 document.getElementById('transmissionDownloadPathInput').addEventListener('change', savePluginSettings);
+                document.getElementById('radarrUrlInput').addEventListener('change', savePluginSettings);
+                document.getElementById('radarrApiKeyInput').addEventListener('change', savePluginSettings);
+                document.getElementById('autoDeleteFailedRadarrDownloadsCheckbox').addEventListener('change', savePluginSettings);
+                document.getElementById('sonarrUrlInput').addEventListener('change', savePluginSettings);
+                document.getElementById('sonarrApiKeyInput').addEventListener('change', savePluginSettings);
+                document.getElementById('autoDeleteFailedSonarrDownloadsCheckbox').addEventListener('change', savePluginSettings);
+
+                async function testArrConnection(type) {
+                    const resSpan = document.getElementById(type.toLowerCase() + 'TestResult');
+                    const checkbox = document.getElementById('autoDeleteFailed' + type + 'DownloadsCheckbox');
+                    const url = document.getElementById(type.toLowerCase() + 'UrlInput').value.trim();
+                    const apiKey = document.getElementById(type.toLowerCase() + 'ApiKeyInput').value.trim();
+
+                    if (!url || !apiKey) {
+                        resSpan.textContent = 'Missing URL or API Key';
+                        resSpan.style.color = '#ff5252';
+                        return;
+                    }
+
+                    resSpan.textContent = 'Testing...';
+                    resSpan.style.color = '';
+                    try {
+                        const form = new FormData();
+                        form.append('url', url);
+                        form.append('apiKey', apiKey);
+                        const res = await fetchWithAuth('/jellyseedr/testarr', 'POST', form);
+                        if (res.ok) {
+                            resSpan.textContent = 'Success!';
+                            resSpan.style.color = '#4CAF50';
+                            checkbox.disabled = false;
+                            savePluginSettings();
+                        } else {
+                            const js = await res.json();
+                            resSpan.textContent = 'Failed: ' + (js.message || 'Unknown error');
+                            resSpan.style.color = '#ff5252';
+                            checkbox.disabled = true;
+                            checkbox.checked = false;
+                            savePluginSettings();
+                        }
+                    } catch (e) {
+                        resSpan.textContent = 'Error: ' + e.message;
+                        resSpan.style.color = '#ff5252';
+                        checkbox.disabled = true;
+                        checkbox.checked = false;
+                        savePluginSettings();
+                    }
+                }
+
+                document.getElementById('testRadarrBtn').addEventListener('click', () => testArrConnection('Radarr'));
+                document.getElementById('testSonarrBtn').addEventListener('click', () => testArrConnection('Sonarr'));
+
 
                 // Mock Transmission — copy token button
                 document.getElementById('transmissionTokenCopyBtn').addEventListener('click', function () {

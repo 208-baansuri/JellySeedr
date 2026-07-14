@@ -14,8 +14,17 @@ public class SeedrManager
 {
     public static readonly SeedrManager Instance = new();
 
+    private static readonly string[] MediaExtensions =
+    [
+        "webm", "mkv", "flv", "vob", "ogv", "ogg", "rrc", "gifv", "mng", "mov",
+        "avi", "qt", "wmv", "yuv", "rm", "asf", "amv", "mp4", "m4p", "m4v",
+        "mpg", "mp2", "mpeg", "mpe", "mpv", "svi", "3gp", "3g2", "mxf", "roq",
+        "nsv", "f4v", "f4p", "f4a", "f4b", "mod"
+    ];
+
     public ILogger? _logger;
     public SeedrClient? Client { get; set; }
+    private IHttpClientFactory? _httpClientFactory;
 
     // Manual-download task tracking (File Browser panel)
     private readonly Dictionary<uint, JellySeedrTask> _activeTasks = new();
@@ -38,6 +47,7 @@ public class SeedrManager
     /// </summary>
     public async Task<SeedrClient?> EnsureClientAsync(IHttpClientFactory httpClientFactory)
     {
+        _httpClientFactory = httpClientFactory;
         if (Client != null) return Client;
 
         var tokenStr = Plugin.Instance!.GetSeedrToken();
@@ -402,6 +412,7 @@ public class SeedrManager
                             task.ErrorMessage = msg;
                             queueItem.Status = QueuedTorrentStatus.Cancelled;
                             queueItem.ErrorMessage = msg;
+                            _ = DeleteFromArrAsync(queueItem, false);
                             return;
                         }
                     }
@@ -438,6 +449,7 @@ public class SeedrManager
             task.ErrorMessage = $"Error during monitoring: {ex.Message}";
             queueItem.Status = QueuedTorrentStatus.Failed;
             queueItem.ErrorMessage = task.ErrorMessage;
+            _ = DeleteFromArrAsync(queueItem, false);
         }
     }
 
@@ -508,8 +520,24 @@ public class SeedrManager
             var shownNames = string.Join(", ", failedNames.Take(3).Select(n => $"'{n}'"));
             if (failedNames.Count > 3) shownNames += $" and {failedNames.Count - 3} more";
 
-            bool any404 = failedTasks.Any(t => t.ErrorMessage == "404 Not Found");
-            if (any404)
+            var failed404MediaFiles = failedTasks
+                .Where(t => t.ErrorMessage == "404 Not Found" &&
+                            t.FetchTask != null &&
+                            MediaExtensions.Contains(Path.GetExtension(t.FetchTask.SourceFileName).TrimStart('.').ToLowerInvariant()))
+                .ToList();
+
+            if (failed404MediaFiles.Count > 0 && (queueItem.AddedBy == "radarr" || queueItem.AddedBy == "sonarr"))
+            {
+                var mediaNames = string.Join(", ", failed404MediaFiles.Select(t => $"'{t.FetchTask?.SourceFileName}'"));
+                queueItem.ErrorMessage = $"Failed to download media file(s) due to 404 Not Found: {mediaNames}. Triggering Arr blacklist.";
+                _logger?.LogWarning("Queue {QueueId}: 404 Not Found for media files ({Files}). Triggering blacklist.",
+                    queueItem.QueueId, mediaNames);
+                queueItem.Status = QueuedTorrentStatus.Failed;
+                _ = DeleteFromArrAsync(queueItem, true);
+                return;
+            }
+            
+            if (failedTasks.Any(t => t.ErrorMessage == "404 Not Found"))
             {
                 // 404 means the file never existed; skip and continue to cleanup.
                 queueItem.ErrorMessage = $"Skipped {failedTasks.Count} file(s) due to 404 Not Found — {shownNames}.";
@@ -522,6 +550,7 @@ public class SeedrManager
                 _logger?.LogWarning("Queue {QueueId}: {Count}/{Total} file(s) failed, aborting cleanup ({Files}).",
                     queueItem.QueueId, failedTasks.Count, jellySeedrTasks.Count, string.Join(", ", failedNames));
                 queueItem.Status = QueuedTorrentStatus.Failed;
+                _ = DeleteFromArrAsync(queueItem, false);
                 return;
             }
         }
@@ -629,7 +658,7 @@ public class SeedrManager
     // Torrent queue
     // -------------------------------------------------------------------------
 
-    public (int position, uint queueId, string message) EnqueueTorrent(SeedrClient client, SeedrTorrentAddParam param, string displayName)
+    public (int position, uint queueId, string message) EnqueueTorrent(SeedrClient client, SeedrTorrentAddParam param, string displayName, string addedBy = "", string hashString = "")
     {
         _queueClient = client;
         var queueId = Interlocked.Increment(ref _queueIdCounter);
@@ -639,6 +668,8 @@ public class SeedrManager
             Param = param,
             DisplayName = displayName,
             QueuedAt = DateTime.UtcNow,
+            AddedBy = addedBy,
+            HashString = hashString,
             Status = QueuedTorrentStatus.Queued
         };
 
@@ -668,7 +699,12 @@ public class SeedrManager
         {
             item = _torrentQueue.FirstOrDefault(q => q.QueueId == queueId);
             if (item == null) return false;
-            if (item.Status == QueuedTorrentStatus.Queued) { item.Status = QueuedTorrentStatus.Cancelled; return true; }
+            if (item.Status == QueuedTorrentStatus.Queued)
+            {
+                item.Status = QueuedTorrentStatus.Cancelled;
+                _ = DeleteFromArrAsync(item, false);
+                return true;
+            }
         }
 
         // Active items can be cancelled only while still torrenting.
@@ -676,6 +712,7 @@ public class SeedrManager
             item.Stage is QueuedTorrentStage.Waiting or QueuedTorrentStage.Torrenting)
         {
             item.Status = QueuedTorrentStatus.Cancelled;
+            _ = DeleteFromArrAsync(item, false);
             if (item.SeedrTorrentId > 0 && _queueClient != null)
             {
                 try { await _queueClient.DeleteTorrentAsync(item.SeedrTorrentId.ToString()); }
@@ -685,6 +722,92 @@ public class SeedrManager
         }
 
         return false;
+    }
+
+    private async Task DeleteFromArrAsync(QueuedTorrent item, bool blacklist)
+    {
+        if (string.IsNullOrEmpty(item.AddedBy) || _httpClientFactory == null) return;
+        
+        var config = Plugin.Instance!.Configuration;
+        string url = string.Empty;
+        string apiKey = string.Empty;
+        bool autoDelete = false;
+
+        if (item.AddedBy == "radarr")
+        {
+            url = config.RadarrUrl;
+            apiKey = config.RadarrApiKey;
+            autoDelete = config.AutoDeleteFailedRadarrDownloads;
+        }
+        else if (item.AddedBy == "sonarr")
+        {
+            url = config.SonarrUrl;
+            apiKey = config.SonarrApiKey;
+            autoDelete = config.AutoDeleteFailedSonarrDownloads;
+        }
+
+        if (!autoDelete || string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(apiKey)) return;
+
+        try
+        {
+            var client = _httpClientFactory.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(10);
+            
+            // 1. Get queue to find ID
+            var queueReqUrl = url.TrimEnd('/') + "/api/v3/queue";
+            var queueReq = new HttpRequestMessage(HttpMethod.Get, queueReqUrl);
+            queueReq.Headers.Add("X-Api-Key", apiKey.Trim());
+            
+            var queueRes = await client.SendAsync(queueReq);
+            if (!queueRes.IsSuccessStatusCode)
+            {
+                _logger?.LogWarning("Failed to fetch queue from {AddedBy}. Status: {Status}", item.AddedBy, queueRes.StatusCode);
+                return;
+            }
+
+            var queueJson = await queueRes.Content.ReadAsStringAsync();
+            using var queueData = System.Text.Json.JsonDocument.Parse(queueJson);
+            var records = queueData.RootElement.GetProperty("records").EnumerateArray();
+            int arrId = -1;
+
+            foreach (var record in records)
+            {
+                if (record.TryGetProperty("downloadId", out var dlIdProp) && 
+                    dlIdProp.GetString()?.Equals(item.HashString, StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    if (record.TryGetProperty("id", out var idProp))
+                    {
+                        arrId = idProp.GetInt32();
+                        break;
+                    }
+                }
+            }
+
+            if (arrId == -1)
+            {
+                _logger?.LogDebug("Torrent {Hash} not found in {AddedBy} queue. It might have already been removed.", item.HashString, item.AddedBy);
+                return;
+            }
+
+            // 2. Delete item
+            var deleteReqUrl = $"{url.TrimEnd('/')}/api/v3/queue/{arrId}?removeFromClient=true&blocklist={blacklist.ToString().ToLowerInvariant()}&skipRedownload=false";
+            var deleteReq = new HttpRequestMessage(HttpMethod.Delete, deleteReqUrl);
+            deleteReq.Headers.Add("X-Api-Key", apiKey.Trim());
+
+            var deleteRes = await client.SendAsync(deleteReq);
+            if (!deleteRes.IsSuccessStatusCode)
+            {
+                _logger?.LogWarning("Failed to delete item from {AddedBy}. Status: {Status}", item.AddedBy, deleteRes.StatusCode);
+            }
+            else
+            {
+                _logger?.LogInformation("Successfully requested {AddedBy} to delete (and blocklist={Blacklist}) torrent {Hash}", item.AddedBy, blacklist, item.HashString);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Error deleting item from {AddedBy}", item.AddedBy);
+        }
     }
 
     public bool RemoveFromQueue(uint queueId)
@@ -870,6 +993,8 @@ public sealed class QueuedTorrent
     public SeedrTorrentAddParam Param { get; set; } = new();
     public string DisplayName { get; set; } = string.Empty;
     public DateTime QueuedAt { get; set; }
+    public string AddedBy { get; set; } = string.Empty;
+    public string HashString { get; set; } = string.Empty;
     public QueuedTorrentStatus Status { get; set; } = QueuedTorrentStatus.Queued;
     public QueuedTorrentStage Stage { get; set; } = QueuedTorrentStage.Waiting;
     public double TorrentProgress { get; set; }

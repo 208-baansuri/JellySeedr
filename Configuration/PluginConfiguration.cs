@@ -10,7 +10,14 @@ public class PluginConfiguration : BasePluginConfiguration
 
     public PluginConfiguration() { }
 
+    // Radarr / Sonarr settings
+    public string RadarrUrl { get; set; } = "http://localhost:7878";
+    public string RadarrApiKey { get; set; } = string.Empty;
+    public bool AutoDeleteFailedRadarrDownloads { get; set; } = false;
 
+    public string SonarrUrl { get; set; } = "http://localhost:8989";
+    public string SonarrApiKey { get; set; } = string.Empty;
+    public bool AutoDeleteFailedSonarrDownloads { get; set; } = false;
 
     /// <summary>
     /// The selected Jellyfin library.

@@ -95,6 +95,35 @@ public class JellySeedrController : ControllerBase
         return Ok(new { message = "Logged out" });
     }
 
+    [HttpPost("testarr")]
+    public async Task<IActionResult> TestArrConnection([FromForm] string url, [FromForm] string apiKey)
+    {
+        if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(apiKey))
+            return BadRequest(new { message = "URL and API Key are required." });
+
+        try
+        {
+            var client = _httpClientFactory.CreateClient();
+            client.Timeout = TimeSpan.FromSeconds(10);
+            var reqUrl = url.TrimEnd('/') + "/api/v3/system/status";
+            
+            var request = new HttpRequestMessage(HttpMethod.Get, reqUrl);
+            request.Headers.Add("X-Api-Key", apiKey.Trim());
+
+            var response = await client.SendAsync(request);
+            if (response.IsSuccessStatusCode)
+            {
+                return Ok(new { message = "Success" });
+            }
+            
+            return BadRequest(new { message = $"Failed with status code: {response.StatusCode}" });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Torrent submission
     // -------------------------------------------------------------------------
