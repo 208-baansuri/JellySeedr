@@ -19,6 +19,15 @@ namespace JellySeedr.Api;
 /// <summary>
 /// Mock Transmission RPC endpoint for Radarr/Sonarr integration.
 /// Auth: HTTP Basic (password = TransmissionToken). CSRF: X-Transmission-Session-Id.
+///
+/// Supported methods (all methods Radarr's TransmissionProxy calls):
+///   torrent-add    — filename/metainfo, paused, download-dir, labels
+///   torrent-get    — ids (int/hash/array/"recently-active"), fields (honoured for filtering)
+///   torrent-set    — ids, seedRatioLimit, seedRatioMode, seedIdleLimit, seedIdleMode, labels
+///   torrent-remove — ids, delete-local-data
+///   queue-move-top — ids  (no-op; Seedr has no queue-priority concept)
+///   session-get    — returns version, download-dir, rpc-version, rpc-version-minimum, encryption
+///   session-stats  — returns activeTorrentCount, pausedTorrentCount, torrentCount
 /// </summary>
 [ApiController]
 [AllowAnonymous]
@@ -76,16 +85,18 @@ public class MockTransmissionController : ControllerBase
 
         var method = body?["method"]?.GetValue<string>() ?? string.Empty;
         var arguments = body?["arguments"] as JsonObject ?? new JsonObject();
-        var tag = body?["tag"]?.GetValue<int?>();
+        var tag = body?["tag"] is JsonNode tagNode ? (int?)tagNode.GetValue<int>() : null;
 
         var result = method switch
         {
-            "torrent-add" => await HandleTorrentAdd(arguments, tag),
-            "torrent-get" => HandleTorrentGet(arguments, tag),
+            "torrent-add"    => await HandleTorrentAdd(arguments, tag),
+            "torrent-get"    => HandleTorrentGet(arguments, tag),
+            "torrent-set"    => HandleTorrentSet(arguments, tag),
             "torrent-remove" => await HandleTorrentRemove(arguments, tag),
-            "session-get" => HandleSessionGet(tag),
-            "session-stats" => HandleSessionStats(tag),
-            _ => UnsupportedMethod(method, tag)
+            "queue-move-top" => HandleQueueMoveTop(arguments, tag),
+            "session-get"    => HandleSessionGet(tag),
+            "session-stats"  => HandleSessionStats(tag),
+            _                => UnsupportedMethod(method, tag)
         };
 
         return result;
@@ -98,7 +109,12 @@ public class MockTransmissionController : ControllerBase
     private async Task<IActionResult> HandleTorrentAdd(JsonObject args, int? tag)
     {
         var config = Plugin.Instance!.Configuration;
-        var downloadPath = config.TransmissionDownloadPath;
+
+        // Resolve download directory: prefer the per-request "download-dir" argument,
+        // fall back to the plugin-configured path.
+        var downloadPath = args["download-dir"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(downloadPath))
+            downloadPath = config.TransmissionDownloadPath;
 
         if (string.IsNullOrWhiteSpace(downloadPath))
             return Ok(ErrorResponse("torrent-add", "Download path is not configured. Set it in the JellySeedr plugin preferences.", tag));
@@ -110,6 +126,13 @@ public class MockTransmissionController : ControllerBase
         if (!TryBuildTorrentParam(args, config, downloadPath, out var param, out var displayName, out var parseError))
             return Ok(ErrorResponse("torrent-add", parseError, tag));
 
+        // Radarr sends "paused": true/false — we note it but Seedr always starts immediately.
+        // No-op here; kept for spec completeness.
+        _ = args["paused"] is JsonValue pausedVal && pausedVal.TryGetValue<bool>(out var paused) && paused;
+
+        // Collect labels sent with the add request (Transmission 4.0+ feature).
+        var labels = ParseLabels(args);
+
         string addedBy = "";
         if (Request?.Headers != null && Request.Headers.TryGetValue("User-Agent", out var uaValues))
         {
@@ -118,9 +141,9 @@ public class MockTransmissionController : ControllerBase
             else if (ua.Contains("Sonarr", StringComparison.OrdinalIgnoreCase)) addedBy = "sonarr";
         }
 
-        var hashString = (param.InputType == SeedrInputType.TorrentFile
+        var hashString = param.InputType == SeedrInputType.TorrentFile
             ? GetInfoHash(param.TorrentBytes)
-            : ExtractMagnetHash(param.Source));
+            : ExtractMagnetHash(param.Source);
 
         var (_, queueId, _) = _seedrManager.EnqueueTorrent(client, param, displayName, addedBy, hashString ?? "");
 
@@ -129,19 +152,20 @@ public class MockTransmissionController : ControllerBase
 
         _torrents[torrentId] = new MockTransmissionTorrent
         {
-            Id = torrentId,
-            QueueId = queueId,
-            Name = displayName,
+            Id           = torrentId,
+            QueueId      = queueId,
+            Name         = displayName,
             DownloadPath = downloadPath,
-            HashString = hashString
+            HashString   = hashString,
+            Labels       = labels
         };
 
         return Ok(SuccessResponse("torrent-add", new JsonObject
         {
             ["torrent-added"] = new JsonObject
             {
-                ["id"] = torrentId,
-                ["name"] = displayName,
+                ["id"]         = torrentId,
+                ["name"]       = displayName,
                 ["hashString"] = hashString
             }
         }, tag));
@@ -152,6 +176,9 @@ public class MockTransmissionController : ControllerBase
         var queueMap = _seedrManager.GetQueue().ToDictionary(q => q.QueueId);
         var requestedIds = GetRequestedTorrentIds(args);
 
+        // "fields" is sent by Radarr but the spec says unknown fields are ignored by the server;
+        // we return all fields we support regardless, which is safe per spec.
+
         var list = new JsonArray();
         foreach (var (torrentId, entry) in _torrents)
         {
@@ -161,6 +188,36 @@ public class MockTransmissionController : ControllerBase
         }
 
         return Ok(SuccessResponse("torrent-get", new JsonObject { ["torrents"] = list }, tag));
+    }
+
+    /// <summary>
+    /// Handles torrent-set. Radarr uses this for two purposes:
+    ///   1. SetTorrentSeedingConfiguration — sends seedRatioLimit/Mode, seedIdleLimit/Mode.
+    ///      Seedr manages all seeding server-side, so these are intentionally ignored.
+    ///   2. SetTorrentLabels / MarkItemAsImported — sends labels to update the post-import category.
+    /// Both pass "ids" as a single-element list containing the torrent hash string.
+    /// </summary>
+    private IActionResult HandleTorrentSet(JsonObject args, int? tag)
+    {
+        var requestedIds = GetRequestedTorrentIds(args);
+        if (requestedIds == null || requestedIds.Count == 0)
+            return Ok(SuccessResponse("torrent-set", new JsonObject(), tag));
+
+        foreach (var id in requestedIds)
+        {
+            if (!_torrents.TryGetValue(id, out var entry)) continue;
+
+            // Labels (post-import category update via MarkItemAsImported).
+            // Seed* parameters are ignored — Seedr handles seeding server-side.
+            if (args["labels"] is JsonArray labelsArray)
+                entry.Labels = labelsArray
+                    .Select(n => n?.GetValue<string>())
+                    .Where(s => s != null)
+                    .Select(s => s!)
+                    .ToList();
+        }
+
+        return Ok(SuccessResponse("torrent-set", new JsonObject(), tag));
     }
 
     private async Task<IActionResult> HandleTorrentRemove(JsonObject args, int? tag)
@@ -190,16 +247,42 @@ public class MockTransmissionController : ControllerBase
         return Ok(SuccessResponse("torrent-remove", new JsonObject(), tag));
     }
 
+    /// <summary>
+    /// Handles queue-move-top. Radarr calls this when RecentMoviePriority or OlderMoviePriority
+    /// is set to "First". Moves the matching queued item to position 0 (ahead of all pending items).
+    /// Has no effect if the item is already active or completed.
+    /// </summary>
+    private IActionResult HandleQueueMoveTop(JsonObject args, int? tag)
+    {
+        var requestedIds = GetRequestedTorrentIds(args);
+        if (requestedIds != null)
+        {
+            foreach (var id in requestedIds)
+            {
+                if (_torrents.TryGetValue(id, out var entry))
+                    _seedrManager.ReorderQueue(entry.QueueId, 0);
+            }
+        }
+
+        return Ok(SuccessResponse("queue-move-top", new JsonObject(), tag));
+    }
+
     private IActionResult HandleSessionGet(int? tag)
     {
         var downloadDir = Plugin.Instance!.Configuration.TransmissionDownloadPath ?? string.Empty;
         return Ok(SuccessResponse("session-get", new JsonObject
         {
-            ["version"] = "2.94 (JellySeedr)",
-            ["download-dir"] = downloadDir,
-            ["rpc-version"] = 17,
+            // version string must match Radarr's minimum version check (>= 2.40).
+            // We advertise 4.0.0 so that Radarr also enables label (category) support.
+            ["version"]             = "4.0.0 (JellySeedr)",
+            ["download-dir"]        = downloadDir,
+            ["rpc-version"]         = 17,
             ["rpc-version-minimum"] = 14,
-            ["encryption"] = "preferred"
+            ["encryption"]          = "preferred",
+            ["seedRatioLimit"]      = 0.0,
+            ["seedRatioLimited"]    = false,
+            ["idle-seeding-limit"]          = 0,
+            ["idle-seeding-limit-enabled"]  = false
         }, tag));
     }
 
@@ -213,7 +296,7 @@ public class MockTransmissionController : ControllerBase
         {
             ["activeTorrentCount"] = activeCount,
             ["pausedTorrentCount"] = _torrents.Count - activeCount,
-            ["torrentCount"] = _torrents.Count
+            ["torrentCount"]       = _torrents.Count
         }, tag));
     }
 
@@ -272,18 +355,40 @@ public class MockTransmissionController : ControllerBase
         SeedrInputType inputType, string downloadPath, JellySeedr.Configuration.PluginConfiguration config,
         string? source = null, byte[]? torrentBytes = null) => new()
         {
-            InputType = inputType,
-            Source = source ?? string.Empty,
-            TorrentBytes = torrentBytes!,
-            DestinationPath = downloadPath,
-            DeleteAfterDownload = config.DeleteAfterDownload,
-            DownloadExtensions = config.DownloadFileTypes,
-            ClashResolution = FetchNameClashResolution.Rename,
-            DownloadAll = true,
+            InputType            = inputType,
+            Source               = source ?? string.Empty,
+            TorrentBytes         = torrentBytes!,
+            DestinationPath      = downloadPath,
+            DeleteAfterDownload  = config.DeleteAfterDownload,
+            DownloadExtensions   = config.DownloadFileTypes,
+            ClashResolution      = FetchNameClashResolution.Rename,
+            DownloadAll          = true,
             UseSubfolderStructure = true
         };
 
-    /// <summary>Resolves "ids" from a torrent-get/remove request to a set of torrent IDs (by number or hash).</summary>
+    /// <summary>
+    /// Parses a "labels" JSON array from a request arguments object.
+    /// Returns an empty list when the field is absent or empty.
+    /// </summary>
+    private static List<string> ParseLabels(JsonObject args)
+    {
+        if (args["labels"] is not JsonArray arr) return new List<string>();
+        return arr
+            .Select(n => n?.GetValue<string>())
+            .Where(s => !string.IsNullOrEmpty(s))
+            .Select(s => s!)
+            .ToList();
+    }
+
+    /// <summary>Resolves "ids" from a torrent-get/set/remove/queue-move-top request to a set of torrent IDs.</summary>
+    /// <remarks>
+    /// Per spec, "ids" may be:
+    ///   - absent                   → all torrents (returns null)
+    ///   - "recently-active"        → all torrents (returns null)
+    ///   - an integer torrent id
+    ///   - a SHA1 hash string
+    ///   - a JSON array of any mix of the above
+    /// </remarks>
     private HashSet<uint>? GetRequestedTorrentIds(JsonObject args)
     {
         var idsNode = args["ids"];
@@ -345,43 +450,52 @@ public class MockTransmissionController : ControllerBase
         var secondsElapsed = queue != null ? (long)(DateTime.UtcNow - queue.QueuedAt).TotalSeconds : 0;
         var isFinished = status == 6 || percentDone >= 1.0;
 
+        // Build labels JSON array from the stored label list.
+        var labelsArray = new JsonArray();
+        foreach (var label in entry.Labels)
+            labelsArray.Add(JsonValue.Create(label));
+
         return new JsonObject
         {
-            ["id"] = id,
-            ["name"] = entry.Name,
-            ["hashString"] = entry.HashString,
-            ["downloadDir"] = entry.DownloadPath,
-            ["status"] = status,
-            ["percentDone"] = percentDone,
-            ["totalSize"] = totalSize,
-            ["leftUntilDone"] = leftUntilDone,
-            ["isFinished"] = isFinished,
-            ["eta"] = -1,
-            ["rateDownload"] = 0,
-            ["rateUpload"] = 0,
-            ["uploadRatio"] = 0,   // meets seedRatioLimit of 0 → Radarr triggers cleanup
-            ["error"] = queue?.Status is QueuedTorrentStatus.Failed or QueuedTorrentStatus.Cancelled ? 3 : 0,
-            ["errorString"] = queue?.ErrorMessage ?? string.Empty,
+            ["id"]                = id,
+            ["name"]              = entry.Name,
+            ["hashString"]        = entry.HashString,
+            ["downloadDir"]       = entry.DownloadPath,
+            ["status"]            = status,
+            ["percentDone"]       = percentDone,
+            ["totalSize"]         = totalSize,
+            ["leftUntilDone"]     = leftUntilDone,
+            ["isFinished"]        = isFinished,
+            ["eta"]               = -1,
+            ["rateDownload"]      = 0,
+            ["rateUpload"]        = 0,
+            ["uploadRatio"]       = 0,     // meets seedRatioLimit of 0 → Radarr triggers cleanup
+            ["error"]             = queue?.Status is QueuedTorrentStatus.Failed or QueuedTorrentStatus.Cancelled ? 3 : 0,
+            ["errorString"]       = queue?.ErrorMessage ?? string.Empty,
             ["secondsDownloading"] = secondsElapsed,
-            ["secondsSeeding"] = isFinished ? secondsElapsed : 0,
-            ["uploadedEver"] = 0,
-            ["downloadedEver"] = totalSize - leftUntilDone,
-            ["seedRatioLimit"] = 0,
-            ["seedRatioMode"] = 1,   // 1 = stop at ratio limit
-            ["seedIdleLimit"] = 0,
-            ["seedIdleMode"] = 1,   // 1 = stop when idle
-            ["fileCount"] = 1,
-            ["file-count"] = 1,
-            ["labels"] = new JsonArray()
+            ["secondsSeeding"]    = isFinished ? secondsElapsed : 0,
+            ["uploadedEver"]      = 0,
+            ["downloadedEver"]    = totalSize - leftUntilDone,
+            // Seed* fields: fixed values that tell Radarr the torrent is immediately
+            // eligible for cleanup (ratio 0 met, mode 1 = per-torrent limit).
+            // Seedr manages all seeding server-side so there is nothing to configure.
+            ["seedRatioLimit"]    = 0,
+            ["seedRatioMode"]     = 1,
+            ["seedIdleLimit"]     = 0,
+            ["seedIdleMode"]      = 1,
+            // file-count: both field names Radarr requests ("fileCount" for Vuze, "file-count" for Transmission)
+            ["fileCount"]         = 1,
+            ["file-count"]        = 1,
+            ["labels"]            = labelsArray
         };
     }
 
     private static int MapStatus(QueuedTorrent? q) => q?.Status switch
     {
-        QueuedTorrentStatus.Queued => 3,
-        QueuedTorrentStatus.Active => 4,
-        QueuedTorrentStatus.Completed => 6,
-        _ => 0
+        QueuedTorrentStatus.Queued    => 3,   // queued to download
+        QueuedTorrentStatus.Active    => 4,   // downloading
+        QueuedTorrentStatus.Completed => 6,   // seeding
+        _                             => 0    // stopped
     };
 
     private void DeleteLocalData(string fullPath, string name)
@@ -551,4 +665,7 @@ public sealed class MockTransmissionTorrent
     public string Name { get; set; } = string.Empty;
     public string DownloadPath { get; set; } = string.Empty;
     public string HashString { get; set; } = string.Empty;
+
+    // Labels managed via torrent-add and torrent-set.
+    public List<string> Labels { get; set; } = new();
 }
