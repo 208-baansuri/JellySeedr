@@ -50,6 +50,14 @@
 
                             <div class="checkboxContainer checkboxContainer-withcolor" style="margin-top: 15px;">
                                 <label>
+                                    <input type="checkbox" is="emby-checkbox" id="clearSeedrOnStorageFullCheckbox" />
+                                    <span>Clear Seedr storage when full</span>
+                                </label>
+                                <div class="fieldDescription" style="margin-top: 4px;">When adding a torrent fails due to insufficient storage, all files and folders not actively being downloaded will be deleted from Seedr and the add will be retried once.</div>
+                            </div>
+
+                            <div class="checkboxContainer checkboxContainer-withcolor" style="margin-top: 15px;">
+                                <label>
                                     <input type="checkbox" is="emby-checkbox" id="autoDownloadCheckbox" />
                                     <span>Auto download files with matching extensions</span>
                                 </label>
@@ -331,6 +339,7 @@
                     const config = await ApiClient.getPluginConfiguration(JellySeedrConfig.pluginUniqueId);
 
                     document.getElementById('deleteAfterDownloadCheckbox').checked = config.DeleteAfterDownload !== false;
+                    document.getElementById('clearSeedrOnStorageFullCheckbox').checked = config.ClearSeedrOnStorageFull !== false;
                     document.getElementById('autoDownloadCheckbox').checked = config.AutoDownload !== false;
                     document.getElementById('useSubfolderStructureCheckbox').checked = config.UseSubfolderStructure !== false;
 
@@ -401,6 +410,7 @@
                     const config = await ApiClient.getPluginConfiguration(JellySeedrConfig.pluginUniqueId);
 
                     const deleteVal = document.getElementById('deleteAfterDownloadCheckbox').checked;
+                    const clearSeedrOnFullVal = document.getElementById('clearSeedrOnStorageFullCheckbox').checked;
                     const autoVal = document.getElementById('autoDownloadCheckbox').checked;
                     const subfolderVal = document.getElementById('useSubfolderStructureCheckbox').checked;
                     const clashVal = document.getElementById('nameClashResolutionSelect').value;
@@ -413,7 +423,7 @@
                     const maxConcurrentVal = Number.isNaN(maxConcurrentParsed) ? 1 : Math.max(1, maxConcurrentParsed);
 
                     const txDownloadPath = (document.getElementById('transmissionDownloadPathInput')?.value || '').trim();
-                    
+
                     const radarrUrlVal = document.getElementById('radarrUrlInput')?.value.trim() || 'http://localhost:7878';
                     const radarrApiKeyVal = document.getElementById('radarrApiKeyInput')?.value.trim() || '';
                     const autoDeleteRadarrVal = document.getElementById('autoDeleteFailedRadarrDownloadsCheckbox')?.checked || false;
@@ -423,6 +433,7 @@
                     const autoDeleteSonarrVal = document.getElementById('autoDeleteFailedSonarrDownloadsCheckbox')?.checked || false;
 
                     if (config.DeleteAfterDownload === deleteVal &&
+                        config.ClearSeedrOnStorageFull === clearSeedrOnFullVal &&
                         config.AutoDownload === autoVal &&
                         config.UseSubfolderStructure === subfolderVal &&
                         config.NameClashResolution === clashVal &&
@@ -439,6 +450,7 @@
                     }
 
                     config.DeleteAfterDownload = deleteVal;
+                    config.ClearSeedrOnStorageFull = clearSeedrOnFullVal;
                     config.AutoDownload = autoVal;
                     config.UseSubfolderStructure = subfolderVal;
                     config.NameClashResolution = clashVal;

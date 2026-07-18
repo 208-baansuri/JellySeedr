@@ -70,4 +70,10 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public string? TransmissionDownloadPath { get; set; }
 
+    /// <summary>
+    /// When enabled, if Seedr reports not enough storage while adding a torrent, all files and folders
+    /// that are not actively being fetched will be deleted from Seedr and the add will be retried once.
+    /// </summary>
+    public bool ClearSeedrOnStorageFull { get; set; } = true;
+
 }

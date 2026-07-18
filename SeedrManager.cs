@@ -37,6 +37,12 @@ public class SeedrManager
     private SeedrClient? _queueClient;
     private uint _queueIdCounter = 0;
 
+    // Torrents that failed tracking after 5 consecutive poll errors.
+    // On the next torrent-add the active torrent (by id) or completed folder (by name)
+    // will be cleaned up from Seedr before the new torrent is submitted.
+    private readonly List<PendingDelete> _pendingDeletes = new();
+    private readonly object _pendingDeletesLock = new();
+
     // -------------------------------------------------------------------------
     // Client initialisation
     // -------------------------------------------------------------------------
@@ -302,15 +308,42 @@ public class SeedrManager
             if (queueItem.Status == QueuedTorrentStatus.Cancelled)
                 return (200, "Torrent was cancelled before it started.");
 
+            // Clean up any stale torrents/folders left behind by previously failed
+            // tracking loops before submitting the new torrent to Seedr.
+            await CleanupPendingDeletesAsync(client);
+
             queueItem.Stage = QueuedTorrentStage.Torrenting;
 
-            AddTorrentResult? result = param.InputType switch
+            AddTorrentResult? result;
+            try
             {
-                SeedrInputType.TorrentFile => await client.AddTorrentAsync(torrentBytes: param.TorrentBytes),
-                SeedrInputType.TorrentUrl => await client.AddTorrentAsync(torrentFile: param.Source),
-                SeedrInputType.MagnetLink => await client.AddTorrentAsync(magnetLink: param.Source),
-                _ => null
-            };
+                result = param.InputType switch
+                {
+                    SeedrInputType.TorrentFile => await client.AddTorrentAsync(torrentBytes: param.TorrentBytes),
+                    SeedrInputType.TorrentUrl  => await client.AddTorrentAsync(torrentFile: param.Source),
+                    SeedrInputType.MagnetLink  => await client.AddTorrentAsync(magnetLink: param.Source),
+                    _                          => null
+                };
+            }
+            catch (NotEnoughStorageException) when (Plugin.Instance?.Configuration?.ClearSeedrOnStorageFull ?? true)
+            {
+                _logger?.LogWarning("Seedr storage full while adding torrent '{Source}'. Attempting to free up space and retry.", param.Source);
+                var freed = await FreeUpStorageAsync(client);
+                if (!freed)
+                {
+                    _logger?.LogWarning("FreeUpStorage found nothing to delete; cannot recover from storage full.");
+                    return (500, "Not enough storage on Seedr and no deletable items found to free up space.");
+                }
+
+                // Retry once after clearing storage.
+                result = param.InputType switch
+                {
+                    SeedrInputType.TorrentFile => await client.AddTorrentAsync(torrentBytes: param.TorrentBytes),
+                    SeedrInputType.TorrentUrl  => await client.AddTorrentAsync(torrentFile: param.Source),
+                    SeedrInputType.MagnetLink  => await client.AddTorrentAsync(magnetLink: param.Source),
+                    _                          => null
+                };
+            }
 
             if (result == null || !result.Result)
             {
@@ -377,6 +410,7 @@ public class SeedrManager
         {
             Folder? seedrFolder = null;
             int missingPolls = 0;
+            int consecutiveFailures = 0;
 
             while (task.Status == JellySeedrTaskStatus.InProgress)
             {
@@ -419,6 +453,7 @@ public class SeedrManager
                     else
                     {
                         missingPolls = 0;
+                        consecutiveFailures = 0;
                         if (torrentTask.TotalSize == -1) torrentTask.TotalSize = activeTorrent.Size;
                         torrentTask.Progress = activeTorrent.Progress;
                         queueItem.TorrentProgress = activeTorrent.Progress;
@@ -426,10 +461,32 @@ public class SeedrManager
                         task.UpdatedAt = DateTime.Now;
                     }
                 }
-                catch (NetworkException ex)
+                catch (Exception ex)
                 {
-                    // Network issue or HttpClient timeout elapsed — skip this poll and retry after the delay.
-                    _logger?.LogWarning("Seedr poll network error for task {TaskId} ({Message}); retrying next cycle.", task.Id, ex.Message);
+                    // Count consecutive poll failures regardless of exception type.
+                    // Network blips are expected and skipped; after 5 in a row we give up
+                    // and schedule the stale torrent/folder for cleanup on the next add.
+                    consecutiveFailures++;
+                    var isNetwork = ex is NetworkException;
+                    _logger?.LogWarning(
+                        "Seedr poll {ExType} for task {TaskId} ({Message}); consecutive failures: {Count}/5.",
+                        isNetwork ? "network error" : "error", task.Id, ex.Message, consecutiveFailures);
+
+                    if (consecutiveFailures >= 5)
+                    {
+                        var msg = $"Torrent tracking aborted after 5 consecutive poll failures (name='{torrentTask.TorrentName}', id={torrentTask.TorrentId}).";
+                        _logger?.LogError(msg);
+                        task.Status = JellySeedrTaskStatus.Failed;
+                        task.ErrorMessage = msg;
+                        queueItem.Status = QueuedTorrentStatus.Failed;
+                        queueItem.ErrorMessage = msg;
+
+                        lock (_pendingDeletesLock)
+                            _pendingDeletes.Add(new PendingDelete(torrentTask.TorrentId, torrentTask.TorrentName.Trim()));
+
+                        _ = DeleteFromArrAsync(queueItem, false);
+                        return;
+                    }
                 }
 
                 await Task.Delay(2000);
@@ -536,7 +593,7 @@ public class SeedrManager
                 _ = DeleteFromArrAsync(queueItem, true);
                 return;
             }
-            
+
             if (failedTasks.Any(t => t.ErrorMessage == "404 Not Found"))
             {
                 // 404 means the file never existed; skip and continue to cleanup.
@@ -567,6 +624,63 @@ public class SeedrManager
             deleteTask.Status = JellySeedrTaskStatus.Pending;
             await HandleDeleteTask(client, deleteTask);
         }
+    }
+
+    /// <summary>
+    /// Deletes all folders and active torrents from Seedr that are not currently being
+    /// fetched by any in-progress task, freeing up storage for a new torrent.
+    /// Returns true if at least one item was deleted.
+    /// </summary>
+    private async Task<bool> FreeUpStorageAsync(SeedrClient client)
+    {
+        var content = await client.ListContentsAsync();
+
+        // Collect folder names that are actively being fetched so we don't delete them.
+        var protectedFolderNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        IEnumerable<JellySeedrTask> activeFetchTasks;
+        lock (_activeTasks)
+            activeFetchTasks = _activeTasks.Values
+                .Where(t => t.Type == JellySeedrTaskType.Fetch && t.Status == JellySeedrTaskStatus.InProgress)
+                .ToList();
+
+        foreach (var fetchTask in activeFetchTasks)
+        {
+            var path = fetchTask.FetchTask?.SourceFilePath;
+            if (string.IsNullOrEmpty(path)) continue;
+            // SourceFilePath is "FolderName/FileName" — the first segment is the folder name.
+            var folderName = path.Split('/', '\\')[0].Trim();
+            if (!string.IsNullOrEmpty(folderName))
+                protectedFolderNames.Add(folderName);
+        }
+
+        // Also protect folders belonging to any queue item currently in the Fetching stage.
+        lock (_queueLock)
+        {
+            foreach (var q in _torrentQueue.Where(q => q.Stage == QueuedTorrentStage.Fetching))
+                protectedFolderNames.Add(q.DisplayName.Trim());
+        }
+
+        var deleteTasks = new List<Task>();
+        int deleted = 0;
+
+        foreach (var file in content.Files ?? [])
+        {
+            _logger?.LogInformation("FreeUpStorage: deleting loose file id={Id} name='{Name}'.", file.FolderFileId, file.Name);
+            deleteTasks.Add(client.DeleteFileAsync(file.FolderFileId.ToString()));
+            deleted++;
+        }
+
+        foreach (var file in content.Files ?? [])
+        {
+            _logger?.LogInformation("FreeUpStorage: deleting loose file id={Id} name='{Name}'.", file.FolderFileId, file.Name);
+            deleteTasks.Add(client.DeleteFileAsync(file.FolderFileId.ToString()));
+            deleted++;
+        }
+
+        if (deleteTasks.Count > 0)
+            await Task.WhenAll(deleteTasks);
+
+        return deleted > 0;
     }
 
     public async Task<(int code, string message)> HandleDeleteTask(SeedrClient client, JellySeedrTask deleteTask)
@@ -727,7 +841,7 @@ public class SeedrManager
     private async Task DeleteFromArrAsync(QueuedTorrent item, bool blacklist)
     {
         if (string.IsNullOrEmpty(item.AddedBy) || _httpClientFactory == null) return;
-        
+
         var config = Plugin.Instance!.Configuration;
         string url = string.Empty;
         string apiKey = string.Empty;
@@ -752,12 +866,12 @@ public class SeedrManager
         {
             var client = _httpClientFactory.CreateClient();
             client.Timeout = TimeSpan.FromSeconds(10);
-            
+
             // 1. Get queue to find ID
             var queueReqUrl = url.TrimEnd('/') + "/api/v3/queue";
             var queueReq = new HttpRequestMessage(HttpMethod.Get, queueReqUrl);
             queueReq.Headers.Add("X-Api-Key", apiKey.Trim());
-            
+
             var queueRes = await client.SendAsync(queueReq);
             if (!queueRes.IsSuccessStatusCode)
             {
@@ -772,7 +886,7 @@ public class SeedrManager
 
             foreach (var record in records)
             {
-                if (record.TryGetProperty("downloadId", out var dlIdProp) && 
+                if (record.TryGetProperty("downloadId", out var dlIdProp) &&
                     dlIdProp.GetString()?.Equals(item.HashString, StringComparison.OrdinalIgnoreCase) == true)
                 {
                     if (record.TryGetProperty("id", out var idProp))
@@ -829,6 +943,65 @@ public class SeedrManager
             _torrentQueue.Remove(item);
             _torrentQueue.Insert(Math.Clamp(newPosition, 0, _torrentQueue.Count), item);
             return true;
+        }
+    }
+
+    /// <summary>
+    /// Drains the pending-delete list and cleans up each stale entry from Seedr.
+    /// For each entry: if a live torrent with the recorded id exists it is deleted;
+    /// otherwise if a completed folder with the recorded name exists it is deleted.
+    /// If neither is found the entry is silently dropped.
+    /// Called at the start of every torrent-add so stale data never accumulates.
+    /// </summary>
+    public async Task CleanupPendingDeletesAsync(SeedrClient client)
+    {
+        List<PendingDelete> snapshot;
+        lock (_pendingDeletesLock)
+        {
+            if (_pendingDeletes.Count == 0) return;
+            snapshot = new List<PendingDelete>(_pendingDeletes);
+            _pendingDeletes.Clear();
+        }
+
+        ListContentsResult? content = null;
+        try { content = await client.ListContentsAsync(); }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "CleanupPendingDeletes: failed to list Seedr contents; will retry next add.");
+            // Put them back so we retry on the next torrent-add.
+            lock (_pendingDeletesLock) _pendingDeletes.AddRange(snapshot);
+            return;
+        }
+
+        foreach (var entry in snapshot)
+        {
+            try
+            {
+                // 1. Active torrent still present — delete it.
+                var liveTorrent = content.Torrents.FirstOrDefault(t => t.Id == entry.TorrentId);
+                if (liveTorrent != null)
+                {
+                    _logger?.LogInformation("CleanupPendingDeletes: deleting stale active torrent id={Id} name='{Name}'.", entry.TorrentId, entry.TrimmedName);
+                    await client.DeleteTorrentAsync(entry.TorrentId.ToString());
+                    continue;
+                }
+
+                // 2. Completed folder present — delete it.
+                var folder = content.Folders.FirstOrDefault(f => f.Name.Trim() == entry.TrimmedName);
+                if (folder != null)
+                {
+                    _logger?.LogInformation("CleanupPendingDeletes: deleting stale folder id={Id} name='{Name}'.", folder.Id, entry.TrimmedName);
+                    await client.DeleteFolderAsync(folder.Id.ToString());
+                    continue;
+                }
+
+                // 3. Nothing found — already gone, nothing to do.
+                _logger?.LogInformation("CleanupPendingDeletes: stale entry name='{Name}' id={Id} not found in Seedr; skipping.", entry.TrimmedName, entry.TorrentId);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "CleanupPendingDeletes: error cleaning up entry name='{Name}' id={Id}.", entry.TrimmedName, entry.TorrentId);
+            }
         }
     }
 
@@ -1149,3 +1322,10 @@ public sealed class SeedrFileDto
     public long size { get; set; }
     public string hash { get; set; } = string.Empty;
 }
+
+/// <summary>
+/// Represents a torrent whose tracking loop failed after 5 consecutive poll errors.
+/// Stored until the next torrent-add, at which point the stale entry is cleaned
+/// from Seedr (active torrent by id, or completed folder by trimmed name).
+/// </summary>
+public sealed record PendingDelete(int TorrentId, string TrimmedName);

@@ -13,7 +13,7 @@
     <PackageReference Include="Jellyfin.Model" Version="10.9.9" >
       <ExcludeAssets>runtime</ExcludeAssets>
     </PackageReference>
-    <PackageReference Include="Seedrcc" Version="1.0.0" />
+    <PackageReference Include="Seedrcc" Version="1.0.1" />
   </ItemGroup>
 
   <ItemGroup>
