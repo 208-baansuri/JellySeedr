@@ -18,6 +18,36 @@ jobs:
       with:
         ref: ${{ github.event.release.target_commitish || 'main' }}
 
+    - name: Update csproj version
+      env:
+        RELEASE_VERSION: ${{ github.event.release.tag_name }}
+      run: |
+        python3 -c '
+        import re
+        import os
+
+        version = os.environ.get("RELEASE_VERSION", "1.0.0.0").lstrip("v")
+        parts = version.split(".")
+        while len(parts) < 4:
+            parts.append("0")
+        version = ".".join(parts)
+
+        csproj_path = "JellySeedr.csproj"
+        with open(csproj_path) as f:
+            content = f.read()
+
+        updated = re.sub(
+            r"<Version>.*?</Version>",
+            f"<Version>{version}</Version>",
+            content
+        )
+
+        with open(csproj_path, "w") as f:
+            f.write(updated)
+
+        print(f"Updated csproj version to {version}")
+        '
+
     - name: Parse csproj configuration
       id: parse_csproj
       run: |
@@ -137,12 +167,12 @@ jobs:
             json.dump(manifest, f, indent=4)
         '
 
-    - name: Commit and push manifest.json
+    - name: Commit and push manifest.json and csproj
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git add manifest.json
-        git commit -m "chore: update manifest.json for release ${{ github.event.release.tag_name }}"
+        git add manifest.json JellySeedr.csproj
+        git commit -m "chore: bump version and update manifest for release ${{ github.event.release.tag_name }}"
         git push origin HEAD:${{ github.event.release.target_commitish || 'main' }}
 
     - name: Upload zip to Release
