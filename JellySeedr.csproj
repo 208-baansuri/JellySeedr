@@ -3,7 +3,7 @@
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <RootNamespace>JellySeedr</RootNamespace>
-    <Version>1.0.3.0</Version>
+    <Version>1.0.4.0</Version>
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
